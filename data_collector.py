@@ -1,6 +1,7 @@
-# data_collector.py
+# data_collector.py (UPDATED FOR JOGGING-IN-PLACE "RUN" GESTURE)
 """
 Robust gesture data collection with metadata and quality control.
+Redefined "run" as jogging-in-place temporal pattern.
 """
 
 import os
@@ -53,6 +54,11 @@ class RecordingMetadata:
     pose_model: str = "mediapipe_pose_v1"
     normalization_method: str = "torso_length"
     
+    # Jogging-specific metadata
+    jogging_amplitude: float = 0.0  # Vertical movement range
+    jogging_frequency: float = 0.0  # Steps per second
+    hip_stability: float = 0.0  # Hip vertical stability (lower = more stable)
+    
     def __post_init__(self):
         """Initialize defaults after dataclass creation."""
         if self.frame_gap_indices is None:
@@ -101,6 +107,17 @@ class GestureDataCollector:
         self.frame_timestamps: List[float] = []
         self.recording_metadata: Optional[RecordingMetadata] = None
         
+        # Special instructions for jogging-in-place
+        self.jogging_instructions = {
+            'run': """🏃 JOGGING-IN-PLACE INSTRUCTIONS:
+• Stand in place, feet shoulder-width apart
+• Lift knees alternately (jogging motion)
+• Swing arms naturally as if running
+• Keep torso relatively stable
+• Focus on VERTICAL movement, not forward motion
+• Target: 2-3 steps per second rhythm""",
+        }
+        
         print(f"Gesture Data Collector initialized for user: {user_id}")
         print(f"Output directory: {self.output_dir}")
         print(f"Sequence length: {SEQUENCE_LENGTH} frames")
@@ -144,6 +161,12 @@ class GestureDataCollector:
         print("\n" + "=" * 60)
         print(f"RECORDING GESTURE: {gesture_name.upper()}")
         print("=" * 60)
+        
+        # Show special instructions for jogging
+        if gesture_name == 'run':
+            print(self.jogging_instructions['run'])
+            print("-" * 60)
+        
         print(f"User: {self.user_id}")
         print(f"Camera: {camera_resolution} @ {camera_fps:.1f} FPS")
         print(f"Sequence length: {SEQUENCE_LENGTH} frames")
@@ -157,6 +180,9 @@ class GestureDataCollector:
         sequence_count = 0
         recording = False
         consecutive_missing = 0
+        
+        # For jogging analysis
+        hip_positions = [] if gesture_name == 'run' else None
         
         while True:
             ret, frame = cap.read()
@@ -177,13 +203,28 @@ class GestureDataCollector:
                     self.frame_timestamps.append(current_time)
                     consecutive_missing = 0
                     
+                    # Track hip positions for jogging analysis
+                    if gesture_name == 'run' and hip_positions is not None:
+                        # Extract hip center
+                        landmarks = pose_result.landmarks
+                        left_hip = landmarks[23]  # left_hip index
+                        right_hip = landmarks[24]  # right_hip index
+                        hip_center = (left_hip + right_hip) / 2
+                        hip_positions.append(hip_center[1])  # y-coordinate (vertical)
+                    
                     # Check if sequence is complete
                     if len(self.current_sequence) >= SEQUENCE_LENGTH:
+                        # Calculate jogging metrics if this is a run gesture
+                        jogging_metrics = None
+                        if gesture_name == 'run' and hip_positions:
+                            jogging_metrics = self._analyze_jogging_pattern(hip_positions, camera_fps)
+                        
                         success = self._save_sequence(
                             gesture_name, 
                             camera_fps, 
                             camera_resolution,
-                            camera_index
+                            camera_index,
+                            jogging_metrics
                         )
                         if success:
                             sequence_count += 1
@@ -191,6 +232,7 @@ class GestureDataCollector:
                         if auto_restart and collect_multiple:
                             # Auto-restart for next sequence
                             self._reset_recording_state()
+                            hip_positions = [] if gesture_name == 'run' else None
                             recording = False
                             print(f"\n✅ Sequence {sequence_count} saved. Ready for next...")
                         else:
@@ -204,6 +246,7 @@ class GestureDataCollector:
                     if consecutive_missing > self.max_missing_frames:
                         print(f"❌ Aborting: {consecutive_missing} consecutive frames without pose")
                         self._reset_recording_state()
+                        hip_positions = [] if gesture_name == 'run' else None
                         recording = False
                         consecutive_missing = 0
             
@@ -214,7 +257,8 @@ class GestureDataCollector:
                 gesture_name, 
                 recording,
                 len(self.current_sequence),
-                sequence_count
+                sequence_count,
+                hip_positions if gesture_name == 'run' else None
             )
             
             cv2.imshow('Gesture Recording', annotated_frame)
@@ -226,22 +270,30 @@ class GestureDataCollector:
                 # Start recording
                 recording = True
                 self._reset_recording_state()
+                hip_positions = [] if gesture_name == 'run' else None
                 consecutive_missing = 0
                 print(f"🎥 Recording started... ({len(self.current_sequence)}/{SEQUENCE_LENGTH})")
             
             elif key == ord('s') and recording and len(self.current_sequence) > 0:
+                # Calculate jogging metrics if this is a run gesture
+                jogging_metrics = None
+                if gesture_name == 'run' and hip_positions:
+                    jogging_metrics = self._analyze_jogging_pattern(hip_positions, camera_fps)
+                
                 # Save current sequence manually
                 success = self._save_sequence(
                     gesture_name, 
                     camera_fps, 
                     camera_resolution,
-                    camera_index
+                    camera_index,
+                    jogging_metrics
                 )
                 if success:
                     sequence_count += 1
                 
                 if collect_multiple and auto_restart:
                     self._reset_recording_state()
+                    hip_positions = [] if gesture_name == 'run' else None
                     recording = False
                     print(f"\n✅ Sequence {sequence_count} saved. Ready for next...")
                 else:
@@ -252,11 +304,16 @@ class GestureDataCollector:
                 if recording and len(self.current_sequence) > 0:
                     response = input("\n⚠️  Recording in progress. Save before quitting? (y/n): ")
                     if response.lower() == 'y':
+                        jogging_metrics = None
+                        if gesture_name == 'run' and hip_positions:
+                            jogging_metrics = self._analyze_jogging_pattern(hip_positions, camera_fps)
+                        
                         self._save_sequence(
                             gesture_name, 
                             camera_fps, 
                             camera_resolution,
-                            camera_index
+                            camera_index,
+                            jogging_metrics
                         )
                 break
         
@@ -270,6 +327,50 @@ class GestureDataCollector:
         print(f"\n✅ Recording complete for '{gesture_name}'")
         print(f"   Sequences collected: {sequence_count}")
         print(f"   User: {self.user_id}")
+    
+    def _analyze_jogging_pattern(self, hip_positions: List[float], fps: float) -> Dict[str, float]:
+        """
+        Analyze jogging-in-place pattern from hip vertical movements.
+        
+        Args:
+            hip_positions: List of hip y-coordinates over time
+            fps: Camera frames per second
+            
+        Returns:
+            Dictionary of jogging metrics
+        """
+        if len(hip_positions) < 10:  # Need enough frames for analysis
+            return {}
+        
+        hip_array = np.array(hip_positions)
+        
+        # Calculate amplitude (vertical movement range)
+        amplitude = np.max(hip_array) - np.min(hip_array)
+        
+        # Calculate frequency using peak detection
+        from scipy.signal import find_peaks
+        
+        # Normalize and find peaks (steps)
+        normalized = (hip_array - np.mean(hip_array)) / np.std(hip_array)
+        peaks, _ = find_peaks(normalized, height=0.5, distance=int(fps/3))  # At least 0.3s between steps
+        
+        if len(peaks) >= 2:
+            # Calculate frequency (steps per second)
+            time_between_peaks = (peaks[-1] - peaks[0]) / fps
+            frequency = (len(peaks) - 1) / time_between_peaks if time_between_peaks > 0 else 0
+        else:
+            frequency = 0
+        
+        # Calculate hip stability (lower = more stable)
+        hip_stability = np.std(hip_array)
+        
+        return {
+            'jogging_amplitude': float(amplitude),
+            'jogging_frequency': float(frequency),
+            'hip_stability': float(hip_stability),
+            'step_count': len(peaks),
+            'analysis_frames': len(hip_positions)
+        }
     
     def _initialize_camera(self, camera_index: int):
         """Initialize camera with optimal settings."""
@@ -294,7 +395,8 @@ class GestureDataCollector:
                 gesture_name: str,
                 recording: bool,
                 current_frames: int,
-                sequence_count: int) -> np.ndarray:
+                sequence_count: int,
+                hip_positions: Optional[List[float]] = None) -> np.ndarray:
         """Draw user interface on frame."""
         annotated = self.pose_extractor.draw_landmarks(
             frame, pose_result, draw_connections=True
@@ -305,7 +407,7 @@ class GestureDataCollector:
         status_color = (0, 0, 255) if recording else (0, 255, 0)
         
         y_offset = 30
-        line_height = 30
+        line_height = 25
         
         texts = [
             f"Gesture: {gesture_name}",
@@ -315,8 +417,63 @@ class GestureDataCollector:
             f"User: {self.user_id}",
         ]
         
+        # Add jogging feedback if applicable
+        if gesture_name == 'run' and hip_positions and len(hip_positions) > 10:
+            recent_hips = hip_positions[-10:]  # Last 10 frames
+            vertical_range = max(recent_hips) - min(recent_hips)
+            
+            # Visual feedback for jogging quality
+            if vertical_range > 0.05:  # Good vertical movement
+                feedback = "✅ Good vertical motion"
+                feedback_color = (0, 255, 0)
+            elif vertical_range > 0.02:  # Moderate movement
+                feedback = "⚠️  More knee lift needed"
+                feedback_color = (0, 165, 255)
+            else:  # Little movement
+                feedback = "❌ Lift knees higher"
+                feedback_color = (0, 0, 255)
+            
+            texts.append(feedback)
+            
+            # Draw vertical movement indicator
+            bar_height = 100
+            bar_width = 20
+            bar_x = annotated.shape[1] - 40
+            bar_y = 50
+            
+            # Normalize recent movement for visualization
+            if len(recent_hips) > 0:
+                normalized = (recent_hips[-1] - min(recent_hips)) / max(0.001, max(recent_hips) - min(recent_hips))
+                fill_height = int(bar_height * normalized)
+                
+                # Draw background
+                cv2.rectangle(
+                    annotated,
+                    (bar_x, bar_y),
+                    (bar_x + bar_width, bar_y + bar_height),
+                    (50, 50, 50), -1
+                )
+                
+                # Draw fill
+                cv2.rectangle(
+                    annotated,
+                    (bar_x, bar_y + bar_height - fill_height),
+                    (bar_x + bar_width, bar_y + bar_height),
+                    feedback_color, -1
+                )
+                
+                # Label
+                cv2.putText(
+                    annotated, "V",
+                    (bar_x - 5, bar_y + bar_height + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1
+                )
+        
         for i, text in enumerate(texts):
             color = status_color if i == 1 else (255, 255, 255)
+            if i >= 5:  # Feedback lines
+                color = feedback_color if 'feedback_color' in locals() else (255, 255, 255)
+            
             cv2.putText(
                 annotated, text, (10, y_offset + i * line_height),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2
@@ -325,7 +482,7 @@ class GestureDataCollector:
         # Add pose detection indicator
         if pose_result is None:
             cv2.putText(
-                annotated, "❌ NO POSE DETECTED", (10, y_offset + 5 * line_height),
+                annotated, "❌ NO POSE DETECTED", (10, y_offset + (len(texts) + 1) * line_height),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2
             )
         else:
@@ -335,7 +492,7 @@ class GestureDataCollector:
                 avg_visibility = np.mean([lm.visibility for lm in landmarks])
                 cv2.putText(
                     annotated, f"Confidence: {avg_visibility:.2f}", 
-                    (10, y_offset + 5 * line_height),
+                    (10, y_offset + (len(texts) + 1) * line_height),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
                 )
         
@@ -380,7 +537,8 @@ class GestureDataCollector:
                       gesture_name: str, 
                       camera_fps: float,
                       camera_resolution: str,
-                      camera_index: int) -> bool:
+                      camera_index: int,
+                      jogging_metrics: Optional[Dict[str, float]] = None) -> bool:
         """
         Save the current sequence with metadata.
         
@@ -438,6 +596,17 @@ class GestureDataCollector:
             pose_model="mediapipe_pose_v1",
             normalization_method="torso_length"
         )
+        
+        # Add jogging metrics if available
+        if jogging_metrics:
+            metadata.jogging_amplitude = jogging_metrics.get('jogging_amplitude', 0.0)
+            metadata.jogging_frequency = jogging_metrics.get('jogging_frequency', 0.0)
+            metadata.hip_stability = jogging_metrics.get('hip_stability', 0.0)
+            
+            print(f"   Jogging analysis:")
+            print(f"     Amplitude: {metadata.jogging_amplitude:.3f}")
+            print(f"     Frequency: {metadata.jogging_frequency:.1f} steps/sec")
+            print(f"     Hip stability: {metadata.hip_stability:.3f}")
         
         # Generate filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
@@ -595,6 +764,25 @@ class DatasetManager:
                     
                     gesture_duration += metadata.get("duration_seconds", 0.0)
                     gesture_users.add(metadata.get("user_id", "unknown"))
+                    
+                    # Special stats for jogging
+                    if gesture == 'run':
+                        if 'jogging_amplitude' in metadata:
+                            if 'jogging_stats' not in stats["gestures"][gesture]:
+                                stats["gestures"][gesture]['jogging_stats'] = {
+                                    'amplitudes': [],
+                                    'frequencies': [],
+                                    'stabilities': []
+                                }
+                            stats["gestures"][gesture]['jogging_stats']['amplitudes'].append(
+                                metadata['jogging_amplitude']
+                            )
+                            stats["gestures"][gesture]['jogging_stats']['frequencies'].append(
+                                metadata['jogging_frequency']
+                            )
+                            stats["gestures"][gesture]['jogging_stats']['stabilities'].append(
+                                metadata['hip_stability']
+                            )
             
             stats["gestures"][gesture] = {
                 "sequences": sequences,
@@ -629,6 +817,13 @@ class DatasetManager:
         for gesture, data in stats["gestures"].items():
             print(f"{gesture:15s}: {data['sequences']:4d} sequences")
             print(f"                {data['user_count']:4d} users, {data['duration']:6.1f}s")
+            
+            # Special jogging stats
+            if gesture == 'run' and 'jogging_stats' in data:
+                jogging = data['jogging_stats']
+                if jogging['amplitudes']:
+                    print(f"                Jogging amplitude: {np.mean(jogging['amplitudes']):.3f} ± {np.std(jogging['amplitudes']):.3f}")
+                    print(f"                Step frequency: {np.mean(jogging['frequencies']):.1f} steps/sec")
         
         # Check if we have enough samples
         print("\n" + "=" * 60)
@@ -689,7 +884,7 @@ def test_data_collection():
     # Initialize collector
     collector = GestureDataCollector(user_id="test_user_01")
     
-    # Test with a single gesture
+    # Test with a single gesture (run/jogging)
     collector.start_recording(
         gesture_name="run",
         collect_multiple=True,
@@ -702,5 +897,4 @@ def test_data_collection():
     manager.validate_dataset()
 
 if __name__ == "__main__":
-    # When run directly, test the system
     test_data_collection()
