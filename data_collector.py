@@ -1,0 +1,706 @@
+# data_collector.py
+"""
+Robust gesture data collection with metadata and quality control.
+"""
+
+import os
+import json
+import time
+import cv2
+import numpy as np
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+from dataclasses import dataclass, asdict
+
+# Import from config
+from config import (
+    DATA_DIR, SEQUENCE_LENGTH, MIN_SAMPLES_PER_GESTURE,
+    GESTURE_CLASSES, CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT
+)
+from pose_extractor import PoseExtractor, PoseResult
+
+@dataclass
+class RecordingMetadata:
+    """Metadata for a recorded gesture sequence."""
+    # User/Session info
+    user_id: str = "anonymous"
+    session_id: str = ""
+    
+    # Recording info
+    gesture: str = ""
+    timestamp: str = ""
+    duration_seconds: float = 0.0
+    
+    # Camera info
+    camera_fps: float = 0.0
+    camera_resolution: str = ""
+    camera_index: int = 0
+    
+    # Sequence info
+    total_frames: int = 0
+    valid_frames: int = 0
+    missing_frames: int = 0
+    sequence_length: int = SEQUENCE_LENGTH
+    
+    # Quality metrics
+    avg_confidence: float = 0.0
+    min_confidence: float = 0.0
+    max_confidence: float = 0.0
+    frame_gap_indices: List[int] = None
+    
+    # Processing info
+    pose_model: str = "mediapipe_pose_v1"
+    normalization_method: str = "torso_length"
+    
+    def __post_init__(self):
+        """Initialize defaults after dataclass creation."""
+        if self.frame_gap_indices is None:
+            self.frame_gap_indices = []
+        if not self.timestamp:
+            self.timestamp = datetime.now().isoformat()
+        if not self.session_id:
+            self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
+
+class GestureDataCollector:
+    """Records high-quality gesture sequences with metadata and validation."""
+    
+    def __init__(self, 
+                 output_dir: Path = DATA_DIR,
+                 max_missing_frames: int = 3,  # Max consecutive missing frames
+                 min_valid_frames: int = SEQUENCE_LENGTH - 5,  # Min valid frames per sequence
+                 user_id: str = "anonymous"):
+        """
+        Args:
+            output_dir: Directory to save collected data
+            max_missing_frames: Maximum allowed consecutive frames without pose
+            min_valid_frames: Minimum valid frames required for a sequence
+            user_id: Identifier for the person recording gestures
+        """
+        self.output_dir = Path(output_dir)
+        self.pose_extractor = PoseExtractor(use_torso_length=True)
+        self.max_missing_frames = max_missing_frames
+        self.min_valid_frames = min_valid_frames
+        self.user_id = user_id
+        
+        # Create output directories
+        self.output_dir.mkdir(exist_ok=True, parents=True)
+        for gesture in GESTURE_CLASSES:
+            (self.output_dir / gesture).mkdir(exist_ok=True, parents=True)
+        
+        # User metadata directory
+        self.user_dir = self.output_dir / "users" / user_id
+        self.user_dir.mkdir(exist_ok=True, parents=True)
+        
+        # Recording state
+        self.current_sequence: List[np.ndarray] = []
+        self.frame_timestamps: List[float] = []
+        self.recording_metadata: Optional[RecordingMetadata] = None
+        
+        print(f"Gesture Data Collector initialized for user: {user_id}")
+        print(f"Output directory: {self.output_dir}")
+        print(f"Sequence length: {SEQUENCE_LENGTH} frames")
+        print(f"Allowed missing frames: {max_missing_frames}")
+    
+    def start_recording(self, 
+                       gesture_name: str, 
+                       camera_index: int = CAMERA_INDEX,
+                       collect_multiple: bool = False,
+                       auto_restart: bool = True):
+        """
+        Record sequences for a specific gesture.
+        
+        Args:
+            gesture_name: Name of the gesture to record
+            camera_index: Camera device index
+            collect_multiple: If True, continue recording multiple sequences
+            auto_restart: If True, automatically restart after each sequence
+        """
+        if gesture_name not in GESTURE_CLASSES:
+            raise ValueError(
+                f"Unknown gesture: '{gesture_name}'. "
+                f"Valid gestures: {GESTURE_CLASSES}"
+            )
+        
+        # Initialize camera
+        cap = self._initialize_camera(camera_index)
+        if cap is None:
+            print(f"❌ Failed to initialize camera {camera_index}")
+            return
+        
+        # Get camera info
+        camera_fps = cap.get(cv2.CAP_PROP_FPS)
+        if camera_fps <= 0:
+            camera_fps = 30.0  # Default assumption
+        
+        camera_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        camera_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        camera_resolution = f"{camera_width}x{camera_height}"
+        
+        print("\n" + "=" * 60)
+        print(f"RECORDING GESTURE: {gesture_name.upper()}")
+        print("=" * 60)
+        print(f"User: {self.user_id}")
+        print(f"Camera: {camera_resolution} @ {camera_fps:.1f} FPS")
+        print(f"Sequence length: {SEQUENCE_LENGTH} frames")
+        print(f"Target: {MIN_SAMPLES_PER_GESTURE} samples per gesture")
+        print("\nControls:")
+        print("  'r' - Start/restart recording")
+        print("  's' - Save current sequence and continue")
+        print("  'q' - Quit recording")
+        print("=" * 60)
+        
+        sequence_count = 0
+        recording = False
+        consecutive_missing = 0
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("❌ Failed to read frame from camera")
+                break
+            
+            # Process frame with pose extractor
+            pose_result = self.pose_extractor.process_frame(frame)
+            
+            # Get frame timestamp
+            current_time = time.time()
+            
+            if recording:
+                if pose_result is not None:
+                    # Valid frame with pose detected
+                    self.current_sequence.append(pose_result.landmarks)
+                    self.frame_timestamps.append(current_time)
+                    consecutive_missing = 0
+                    
+                    # Check if sequence is complete
+                    if len(self.current_sequence) >= SEQUENCE_LENGTH:
+                        success = self._save_sequence(
+                            gesture_name, 
+                            camera_fps, 
+                            camera_resolution,
+                            camera_index
+                        )
+                        if success:
+                            sequence_count += 1
+                        
+                        if auto_restart and collect_multiple:
+                            # Auto-restart for next sequence
+                            self._reset_recording_state()
+                            recording = False
+                            print(f"\n✅ Sequence {sequence_count} saved. Ready for next...")
+                        else:
+                            recording = False
+                else:
+                    # No pose detected in frame
+                    consecutive_missing += 1
+                    self.frame_timestamps.append(current_time)  # Track gap
+                    
+                    # Abort if too many consecutive missing frames
+                    if consecutive_missing > self.max_missing_frames:
+                        print(f"❌ Aborting: {consecutive_missing} consecutive frames without pose")
+                        self._reset_recording_state()
+                        recording = False
+                        consecutive_missing = 0
+            
+            # Draw UI
+            annotated_frame = self._draw_ui(
+                frame, 
+                pose_result, 
+                gesture_name, 
+                recording,
+                len(self.current_sequence),
+                sequence_count
+            )
+            
+            cv2.imshow('Gesture Recording', annotated_frame)
+            
+            # Handle keyboard input
+            key = cv2.waitKey(1) & 0xFF
+            
+            if key == ord('r') and not recording:
+                # Start recording
+                recording = True
+                self._reset_recording_state()
+                consecutive_missing = 0
+                print(f"🎥 Recording started... ({len(self.current_sequence)}/{SEQUENCE_LENGTH})")
+            
+            elif key == ord('s') and recording and len(self.current_sequence) > 0:
+                # Save current sequence manually
+                success = self._save_sequence(
+                    gesture_name, 
+                    camera_fps, 
+                    camera_resolution,
+                    camera_index
+                )
+                if success:
+                    sequence_count += 1
+                
+                if collect_multiple and auto_restart:
+                    self._reset_recording_state()
+                    recording = False
+                    print(f"\n✅ Sequence {sequence_count} saved. Ready for next...")
+                else:
+                    recording = False
+            
+            elif key == ord('q'):
+                # Quit recording
+                if recording and len(self.current_sequence) > 0:
+                    response = input("\n⚠️  Recording in progress. Save before quitting? (y/n): ")
+                    if response.lower() == 'y':
+                        self._save_sequence(
+                            gesture_name, 
+                            camera_fps, 
+                            camera_resolution,
+                            camera_index
+                        )
+                break
+        
+        # Cleanup
+        cap.release()
+        cv2.destroyAllWindows()
+        
+        # Save session summary
+        self._save_session_summary(gesture_name, sequence_count)
+        
+        print(f"\n✅ Recording complete for '{gesture_name}'")
+        print(f"   Sequences collected: {sequence_count}")
+        print(f"   User: {self.user_id}")
+    
+    def _initialize_camera(self, camera_index: int):
+        """Initialize camera with optimal settings."""
+        cap = cv2.VideoCapture(camera_index)
+        
+        if not cap.isOpened():
+            return None
+        
+        # Set camera properties
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        
+        # Enable auto-focus if available
+        cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+        
+        return cap
+    
+    def _draw_ui(self, 
+                frame: np.ndarray, 
+                pose_result: Optional[PoseResult],
+                gesture_name: str,
+                recording: bool,
+                current_frames: int,
+                sequence_count: int) -> np.ndarray:
+        """Draw user interface on frame."""
+        annotated = self.pose_extractor.draw_landmarks(
+            frame, pose_result, draw_connections=True
+        )
+        
+        # Add status text
+        status = "🔴 RECORDING" if recording else "⏸️  READY"
+        status_color = (0, 0, 255) if recording else (0, 255, 0)
+        
+        y_offset = 30
+        line_height = 30
+        
+        texts = [
+            f"Gesture: {gesture_name}",
+            f"Status: {status}",
+            f"Frames: {current_frames}/{SEQUENCE_LENGTH}",
+            f"Sequences: {sequence_count}",
+            f"User: {self.user_id}",
+        ]
+        
+        for i, text in enumerate(texts):
+            color = status_color if i == 1 else (255, 255, 255)
+            cv2.putText(
+                annotated, text, (10, y_offset + i * line_height),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2
+            )
+        
+        # Add pose detection indicator
+        if pose_result is None:
+            cv2.putText(
+                annotated, "❌ NO POSE DETECTED", (10, y_offset + 5 * line_height),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2
+            )
+        else:
+            # Show confidence
+            if hasattr(pose_result.mp_results, 'pose_world_landmarks'):
+                landmarks = pose_result.mp_results.pose_world_landmarks.landmark
+                avg_visibility = np.mean([lm.visibility for lm in landmarks])
+                cv2.putText(
+                    annotated, f"Confidence: {avg_visibility:.2f}", 
+                    (10, y_offset + 5 * line_height),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
+                )
+        
+        # Add progress bar for recording
+        if recording:
+            bar_width = 400
+            bar_height = 20
+            bar_x = (annotated.shape[1] - bar_width) // 2
+            bar_y = annotated.shape[0] - 50
+            
+            # Background
+            cv2.rectangle(
+                annotated, 
+                (bar_x, bar_y), 
+                (bar_x + bar_width, bar_y + bar_height), 
+                (50, 50, 50), -1
+            )
+            
+            # Progress
+            progress = min(current_frames / SEQUENCE_LENGTH, 1.0)
+            progress_width = int(bar_width * progress)
+            progress_color = (0, int(255 * progress), int(255 * (1 - progress)))
+            
+            cv2.rectangle(
+                annotated,
+                (bar_x, bar_y),
+                (bar_x + progress_width, bar_y + bar_height),
+                progress_color, -1
+            )
+            
+            # Progress text
+            progress_text = f"{current_frames}/{SEQUENCE_LENGTH} ({progress:.0%})"
+            cv2.putText(
+                annotated, progress_text,
+                (bar_x + 10, bar_y + 15),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1
+            )
+        
+        return annotated
+    
+    def _save_sequence(self, 
+                      gesture_name: str, 
+                      camera_fps: float,
+                      camera_resolution: str,
+                      camera_index: int) -> bool:
+        """
+        Save the current sequence with metadata.
+        
+        Returns:
+            True if sequence was saved successfully
+        """
+        if len(self.current_sequence) < self.min_valid_frames:
+            print(f"❌ Sequence too short: {len(self.current_sequence)}/{self.min_valid_frames} frames")
+            return False
+        
+        # Pad sequence to required length if needed
+        sequence_array = self._prepare_sequence_array()
+        
+        if sequence_array is None:
+            return False
+        
+        # Calculate timing statistics
+        duration = 0.0
+        frame_gaps = []
+        if len(self.frame_timestamps) > 1:
+            timestamps = self.frame_timestamps[:len(self.current_sequence)]
+            duration = timestamps[-1] - timestamps[0]
+            
+            # Find gaps (frames without pose)
+            for i in range(1, len(timestamps)):
+                gap = timestamps[i] - timestamps[i-1]
+                if gap > 1.5 / camera_fps:  # More than 1.5x expected frame interval
+                    frame_gaps.append(i)
+        
+        # Calculate confidence statistics
+        confidences = []
+        for i in range(len(self.current_sequence)):
+            # Extract confidence from raw landmarks if available
+            # For now, use a placeholder - in real implementation, extract from PoseResult
+            confidences.append(0.8)  # Placeholder
+        
+        # Create metadata
+        metadata = RecordingMetadata(
+            user_id=self.user_id,
+            session_id=datetime.now().strftime("%Y%m%d_%H%M%S"),
+            gesture=gesture_name,
+            timestamp=datetime.now().isoformat(),
+            duration_seconds=duration,
+            camera_fps=camera_fps,
+            camera_resolution=camera_resolution,
+            camera_index=camera_index,
+            total_frames=len(self.frame_timestamps),
+            valid_frames=len(self.current_sequence),
+            missing_frames=len(self.frame_timestamps) - len(self.current_sequence),
+            sequence_length=SEQUENCE_LENGTH,
+            avg_confidence=np.mean(confidences) if confidences else 0.0,
+            min_confidence=np.min(confidences) if confidences else 0.0,
+            max_confidence=np.max(confidences) if confidences else 0.0,
+            frame_gap_indices=frame_gaps,
+            pose_model="mediapipe_pose_v1",
+            normalization_method="torso_length"
+        )
+        
+        # Generate filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        filename_base = f"{gesture_name}_{self.user_id}_{timestamp}"
+        
+        # Save sequence
+        sequence_path = self.output_dir / gesture_name / f"{filename_base}.npy"
+        np.save(sequence_path, sequence_array)
+        
+        # Save metadata
+        metadata_path = sequence_path.with_suffix('.json')
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata.to_dict(), f, indent=2, default=str)
+        
+        # Save raw timestamps (optional)
+        timestamps_path = sequence_path.with_suffix('.timestamps.npy')
+        np.save(timestamps_path, np.array(self.frame_timestamps))
+        
+        print(f"✅ Saved sequence: {filename_base}")
+        print(f"   Frames: {len(self.current_sequence)}/{SEQUENCE_LENGTH}")
+        print(f"   Duration: {duration:.2f}s")
+        print(f"   Gaps: {len(frame_gaps)}")
+        
+        return True
+    
+    def _prepare_sequence_array(self) -> Optional[np.ndarray]:
+        """Prepare sequence array, padding if necessary."""
+        if len(self.current_sequence) == 0:
+            return None
+        
+        # Stack all valid frames
+        sequence_array = np.stack(self.current_sequence, axis=0)
+        
+        # Pad or truncate to SEQUENCE_LENGTH
+        if sequence_array.shape[0] < SEQUENCE_LENGTH:
+            # Pad with zeros (model will learn to ignore based on features)
+            pad_amount = SEQUENCE_LENGTH - sequence_array.shape[0]
+            sequence_array = np.pad(
+                sequence_array,
+                ((0, pad_amount), (0, 0), (0, 0)),
+                mode='constant',
+                constant_values=0
+            )
+        elif sequence_array.shape[0] > SEQUENCE_LENGTH:
+            # Truncate to SEQUENCE_LENGTH (keep middle portion)
+            start = (sequence_array.shape[0] - SEQUENCE_LENGTH) // 2
+            sequence_array = sequence_array[start:start + SEQUENCE_LENGTH]
+        
+        return sequence_array.astype(np.float32)
+    
+    def _reset_recording_state(self):
+        """Reset recording state for a new sequence."""
+        self.current_sequence = []
+        self.frame_timestamps = []
+        self.recording_metadata = None
+    
+    def _save_session_summary(self, gesture_name: str, sequence_count: int):
+        """Save a summary of the recording session."""
+        summary = {
+            "user_id": self.user_id,
+            "gesture": gesture_name,
+            "timestamp": datetime.now().isoformat(),
+            "sequences_recorded": sequence_count,
+            "target_samples": MIN_SAMPLES_PER_GESTURE,
+            "camera_used": CAMERA_INDEX,
+            "sequence_length": SEQUENCE_LENGTH,
+            "max_missing_frames": self.max_missing_frames,
+            "min_valid_frames": self.min_valid_frames,
+        }
+        
+        summary_path = self.user_dir / f"session_{gesture_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=2, default=str)
+        
+        # Update user statistics
+        self._update_user_statistics(gesture_name, sequence_count)
+    
+    def _update_user_statistics(self, gesture_name: str, new_sequences: int):
+        """Update statistics for the current user."""
+        stats_path = self.user_dir / "statistics.json"
+        
+        if stats_path.exists():
+            with open(stats_path, 'r') as f:
+                stats = json.load(f)
+        else:
+            stats = {
+                "user_id": self.user_id,
+                "first_session": datetime.now().isoformat(),
+                "total_sessions": 0,
+                "total_sequences": 0,
+                "gestures": {},
+            }
+        
+        # Update statistics
+        stats["last_session"] = datetime.now().isoformat()
+        stats["total_sessions"] = stats.get("total_sessions", 0) + 1
+        stats["total_sequences"] = stats.get("total_sequences", 0) + new_sequences
+        
+        # Update gesture-specific stats
+        if gesture_name not in stats["gestures"]:
+            stats["gestures"][gesture_name] = {
+                "first_recorded": datetime.now().isoformat(),
+                "total_sequences": 0,
+                "last_recorded": datetime.now().isoformat(),
+            }
+        
+        stats["gestures"][gesture_name]["total_sequences"] += new_sequences
+        stats["gestures"][gesture_name]["last_recorded"] = datetime.now().isoformat()
+        
+        # Save updated statistics
+        with open(stats_path, 'w') as f:
+            json.dump(stats, f, indent=2, default=str)
+
+# ============================================================================
+# DATASET UTILITIES
+# ============================================================================
+
+class DatasetManager:
+    """Utilities for managing and analyzing the collected dataset."""
+    
+    def __init__(self, dataset_dir: Path = DATA_DIR):
+        self.dataset_dir = Path(dataset_dir)
+    
+    def get_dataset_stats(self) -> Dict[str, Any]:
+        """Get statistics about the collected dataset."""
+        stats = {
+            "total_sequences": 0,
+            "gestures": {},
+            "users": set(),
+            "total_duration": 0.0,
+        }
+        
+        for gesture in GESTURE_CLASSES:
+            gesture_dir = self.dataset_dir / gesture
+            if not gesture_dir.exists():
+                stats["gestures"][gesture] = {
+                    "sequences": 0,
+                    "users": set(),
+                    "duration": 0.0,
+                }
+                continue
+            
+            npy_files = list(gesture_dir.glob("*.npy"))
+            sequences = len(npy_files)
+            
+            # Parse metadata for each sequence
+            gesture_duration = 0.0
+            gesture_users = set()
+            
+            for npy_file in npy_files:
+                json_file = npy_file.with_suffix('.json')
+                if json_file.exists():
+                    with open(json_file, 'r') as f:
+                        metadata = json.load(f)
+                    
+                    gesture_duration += metadata.get("duration_seconds", 0.0)
+                    gesture_users.add(metadata.get("user_id", "unknown"))
+            
+            stats["gestures"][gesture] = {
+                "sequences": sequences,
+                "users": list(gesture_users),
+                "user_count": len(gesture_users),
+                "duration": gesture_duration,
+            }
+            
+            stats["total_sequences"] += sequences
+            stats["total_duration"] += gesture_duration
+            stats["users"].update(gesture_users)
+        
+        stats["user_count"] = len(stats["users"])
+        stats["users"] = list(stats["users"])
+        
+        return stats
+    
+    def print_dataset_summary(self):
+        """Print a human-readable summary of the dataset."""
+        stats = self.get_dataset_stats()
+        
+        print("\n" + "=" * 60)
+        print("DATASET SUMMARY")
+        print("=" * 60)
+        print(f"Total sequences: {stats['total_sequences']}")
+        print(f"Total duration: {stats['total_duration']:.1f} seconds")
+        print(f"Unique users: {stats['user_count']}")
+        print(f"Users: {', '.join(stats['users'])}")
+        print("\nPer gesture breakdown:")
+        print("-" * 60)
+        
+        for gesture, data in stats["gestures"].items():
+            print(f"{gesture:15s}: {data['sequences']:4d} sequences")
+            print(f"                {data['user_count']:4d} users, {data['duration']:6.1f}s")
+        
+        # Check if we have enough samples
+        print("\n" + "=" * 60)
+        print("SAMPLING STATUS")
+        print("=" * 60)
+        
+        for gesture, data in stats["gestures"].items():
+            status = "✅" if data["sequences"] >= MIN_SAMPLES_PER_GESTURE else "❌"
+            print(f"{gesture:15s}: {status} {data['sequences']:4d}/{MIN_SAMPLES_PER_GESTURE}")
+        
+        print("=" * 60)
+    
+    def validate_dataset(self) -> bool:
+        """Validate dataset integrity."""
+        print("\nValidating dataset...")
+        
+        all_valid = True
+        
+        for gesture in GESTURE_CLASSES:
+            gesture_dir = self.dataset_dir / gesture
+            if not gesture_dir.exists():
+                print(f"❌ Missing directory for gesture: {gesture}")
+                all_valid = False
+                continue
+            
+            npy_files = list(gesture_dir.glob("*.npy"))
+            
+            for npy_file in npy_files:
+                # Check that numpy file loads correctly
+                try:
+                    data = np.load(npy_file)
+                    if data.shape[0] != SEQUENCE_LENGTH:
+                        print(f"⚠️  {npy_file.name}: Wrong sequence length {data.shape[0]} != {SEQUENCE_LENGTH}")
+                except Exception as e:
+                    print(f"❌ {npy_file.name}: Failed to load - {e}")
+                    all_valid = False
+                
+                # Check metadata file exists
+                json_file = npy_file.with_suffix('.json')
+                if not json_file.exists():
+                    print(f"⚠️  {npy_file.name}: Missing metadata file")
+        
+        if all_valid:
+            print("✅ Dataset validation passed!")
+        else:
+            print("❌ Dataset validation failed!")
+        
+        return all_valid
+
+# ============================================================================
+# MAIN TEST FUNCTION
+# ============================================================================
+
+def test_data_collection():
+    """Test the data collection system."""
+    print("Testing Gesture Data Collection...")
+    
+    # Initialize collector
+    collector = GestureDataCollector(user_id="test_user_01")
+    
+    # Test with a single gesture
+    collector.start_recording(
+        gesture_name="run",
+        collect_multiple=True,
+        auto_restart=True
+    )
+    
+    # Analyze dataset
+    manager = DatasetManager()
+    manager.print_dataset_summary()
+    manager.validate_dataset()
+
+if __name__ == "__main__":
+    # When run directly, test the system
+    test_data_collection()
