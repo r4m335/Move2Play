@@ -1,46 +1,58 @@
-# gesture_action_contract.py
+# gesture_action_contract.py (MERGED VERSION 1.1)
 """
 Defines the immutable mapping between gestures and game actions.
 Versioned contract that must remain consistent after training starts.
 
-CONTRACT_VERSION: 1.0
-LAST_MODIFIED: 2023-10-15
+CONTRACT_VERSION: 1.1
+LAST_MODIFIED: 2023-10-20
 FROZEN_AFTER_TRAINING: True
+
+IDLE CLASS ADDED: Prevents false positives by teaching model what "not a gesture" looks like.
 """
 
-CONTRACT_VERSION = "1.0"
-LAST_MODIFIED = "2023-10-15"
+CONTRACT_VERSION = "1.1"
+LAST_MODIFIED = "2023-10-20"
 FROZEN_AFTER_TRAINING = True
 
 # ============================================================================
-# PRIMARY GESTURE-ACTION MAPPING
+# PRIMARY GESTURE-ACTION MAPPING (WITH IDLE CLASS)
 # ============================================================================
-# This mapping defines the core relationship between detected gestures and
-# game actions. Multiple gestures can map to the same action type with
-# different parameters (e.g., punch_left and punch_right both map to 'attack').
+# "idle" must be first and represents standing still/natural movements
+# CRITICAL: Prevents false positives in real-time inference
 
 GESTURE_ACTION_MAPPING = {
-    # Gesture: (Action Type, Action Parameters)
-    "run": ("forward_movement", {"speed": 1.0}),
-    "punch_left": ("attack", {"side": "left", "damage": 25}),
-    "punch_right": ("attack", {"side": "right", "damage": 25}),
+    # IDLE CLASS - Represents standing still, natural movements, breathing, posture shifts
+    # This is the most important class for preventing false positives
+    "idle": ("no_action", {"description": "standing still, natural movements"}),
+    
+    # Active gestures (alphabetical order for consistency)
+    "block": ("defense", {"damage_reduction": 0.7, "duration": 2.0}),
     "kick": ("attack", {"type": "kick", "damage": 35}),
     "lean_left": ("dodge", {"direction": "left", "distance": 2.0}),
     "lean_right": ("dodge", {"direction": "right", "distance": 2.0}),
+    "punch_left": ("attack", {"side": "left", "damage": 25}),
+    "punch_right": ("attack", {"side": "right", "damage": 25}),
+    "run": ("forward_movement", {"speed": 1.0}),
     "squat": ("slide", {"duration": 1.5, "height_reduction": 0.5}),
-    "block": ("defense", {"damage_reduction": 0.7, "duration": 2.0}),
 }
 
 # ============================================================================
 # DERIVED CONSTANTS (DO NOT MODIFY DIRECTLY)
 # ============================================================================
 
-# All gesture classes in alphabetical order for consistent model training
+# All gesture classes in alphabetical order (idle will be first alphabetically)
 GESTURE_CLASSES = sorted(list(GESTURE_ACTION_MAPPING.keys()))
 NUM_GESTURES = len(GESTURE_CLASSES)
 
 # Action types for reference
 ACTION_TYPES = sorted(list(set(action_type for action_type, _ in GESTURE_ACTION_MAPPING.values())))
+
+# Special constants for idle class
+IDLE_CLASS = "idle"
+IDLE_ACTION = ("no_action", {"description": "standing still, natural movements"})
+
+# Verify that idle is the first class (alphabetically)
+assert GESTURE_CLASSES[0] == "idle", "idle must be the first gesture class (alphabetically)"
 
 # ============================================================================
 # VALIDATION AND UTILITY CLASS
@@ -100,6 +112,7 @@ class GestureActionContract:
         2. No duplicate gesture names
         3. All parameters are dictionaries
         4. GESTURE_CLASSES matches mapping keys
+        5. idle class exists and is properly configured
         
         Returns:
             True if validation passes
@@ -160,8 +173,20 @@ class GestureActionContract:
                 f"GESTURE_CLASSES length ({len(GESTURE_CLASSES)})"
             )
         
+        # 7. Verify idle class exists and is first
+        if IDLE_CLASS not in GESTURE_ACTION_MAPPING:
+            raise ValueError(f"IDLE_CLASS '{IDLE_CLASS}' not found in mapping")
+        
+        if GESTURE_CLASSES[0] != IDLE_CLASS:
+            raise ValueError(f"IDLE_CLASS '{IDLE_CLASS}' must be first in GESTURE_CLASSES")
+        
+        # 8. Verify idle action is correct
+        if GESTURE_ACTION_MAPPING[IDLE_CLASS] != IDLE_ACTION:
+            raise ValueError(f"IDLE_CLASS action mismatch. Expected {IDLE_ACTION}, got {GESTURE_ACTION_MAPPING[IDLE_CLASS]}")
+        
         print(f"✅ Contract validation passed (Version {CONTRACT_VERSION})")
         print(f"   Gestures: {NUM_GESTURES}, Actions: {len(ACTION_TYPES)}")
+        print(f"   Includes IDLE class for false positive prevention")
         return True
     
     @staticmethod
@@ -181,6 +206,8 @@ class GestureActionContract:
             "gesture_classes": GESTURE_CLASSES,
             "action_types": ACTION_TYPES,
             "mapping": GESTURE_ACTION_MAPPING.copy(),
+            "has_idle_class": True,
+            "idle_class": IDLE_CLASS,
         }
     
     @staticmethod
@@ -197,7 +224,7 @@ class GestureActionContract:
         export_data = {
             "export_timestamp": datetime.datetime.now().isoformat(),
             "contract": GestureActionContract.get_contract_info(),
-            "notes": "DO NOT MODIFY AFTER TRAINING STARTS",
+            "notes": "DO NOT MODIFY AFTER TRAINING STARTS - Includes IDLE class v1.1",
         }
         
         with open(filepath, 'w') as f:
@@ -236,6 +263,29 @@ class GestureActionContract:
             gesture for gesture, (a_type, _) in GESTURE_ACTION_MAPPING.items()
             if a_type == action_type
         ]
+    
+    @staticmethod
+    def is_idle_gesture(gesture_name: str) -> bool:
+        """
+        Check if a gesture is the idle/non-action class.
+        
+        Args:
+            gesture_name: Name of the gesture
+            
+        Returns:
+            True if it's the idle gesture
+        """
+        return gesture_name == IDLE_CLASS
+    
+    @staticmethod
+    def get_active_gestures() -> list:
+        """
+        Get all non-idle (active) gesture names.
+        
+        Returns:
+            List of active gesture names
+        """
+        return [g for g in GESTURE_CLASSES if g != IDLE_CLASS]
 
 # ============================================================================
 # USAGE EXAMPLES AND TESTING
@@ -247,16 +297,28 @@ def print_contract_summary():
     print("GESTURE-ACTION CONTRACT SUMMARY")
     print("=" * 60)
     print(f"Version: {CONTRACT_VERSION}")
-    print(f"Gestures: {NUM_GESTURES}")
+    print(f"Gestures: {NUM_GESTURES} (including idle class)")
+    print(f"Active Gestures: {NUM_GESTURES - 1}")
     print(f"Action Types: {len(ACTION_TYPES)}")
     print()
     
+    # Highlight idle class
+    print("IDLE CLASS (False Positive Prevention):")
+    _, idle_params = GESTURE_ACTION_MAPPING[IDLE_CLASS]
+    print(f"  {IDLE_CLASS}: {idle_params['description']}")
+    print()
+    
     # Group gestures by action type
-    print("MAPPING:")
+    print("ACTIVE GESTURES BY ACTION TYPE:")
     for action_type in ACTION_TYPES:
+        if action_type == "no_action":
+            continue  # Already shown above
+            
         gestures = GestureActionContract.get_gestures_by_action(action_type)
         print(f"  {action_type}:")
         for gesture in gestures:
+            if gesture == IDLE_CLASS:
+                continue
             _, params = GESTURE_ACTION_MAPPING[gesture]
             param_str = ", ".join(f"{k}={v}" for k, v in params.items())
             print(f"    - {gesture} ({param_str})")
@@ -265,7 +327,7 @@ def print_contract_summary():
 
 def test_contract():
     """Run comprehensive tests on the contract."""
-    print("Testing Gesture-Action Contract...")
+    print("Testing Gesture-Action Contract (v1.1 with IDLE class)...")
     
     try:
         # Validate consistency
@@ -273,6 +335,7 @@ def test_contract():
         
         # Test individual lookups
         test_cases = [
+            ("idle", ("no_action", {"description": "standing still, natural movements"})),
             ("run", ("forward_movement", {"speed": 1.0})),
             ("punch_left", ("attack", {"side": "left", "damage": 25})),
             ("block", ("defense", {"damage_reduction": 0.7, "duration": 2.0})),
@@ -282,6 +345,17 @@ def test_contract():
             result = GestureActionContract.get_action_for_gesture(gesture)
             assert result == expected, f"Mismatch for {gesture}: {result} != {expected}"
             print(f"  ✓ {gesture} -> {result[0]}")
+        
+        # Test idle class helper
+        assert GestureActionContract.is_idle_gesture("idle"), "is_idle_gesture should return True for idle"
+        assert not GestureActionContract.is_idle_gesture("run"), "is_idle_gesture should return False for run"
+        print("  ✓ Idle class detection works")
+        
+        # Test active gestures list
+        active_gestures = GestureActionContract.get_active_gestures()
+        assert "idle" not in active_gestures, "idle should not be in active gestures"
+        assert len(active_gestures) == NUM_GESTURES - 1, f"Should have {NUM_GESTURES - 1} active gestures"
+        print(f"  ✓ Active gestures: {len(active_gestures)} gestures")
         
         # Test error cases
         try:
@@ -297,10 +371,14 @@ def test_contract():
         
         print("  ✓ All gesture indices are correct")
         
-        # Test grouping by action
+        # Test grouping by action (should exclude idle)
         attack_gestures = GestureActionContract.get_gestures_by_action("attack")
         assert set(attack_gestures) == {"punch_left", "punch_right", "kick"}
         print(f"  ✓ Attack gestures: {attack_gestures}")
+        
+        # Verify idle is first in classes list
+        assert GESTURE_CLASSES[0] == "idle", "idle must be first in GESTURE_CLASSES"
+        print("  ✓ idle is first in gesture classes list")
         
         print("\n✅ All tests passed!")
         
@@ -329,7 +407,7 @@ def assert_contract_unchanged():
         
         # In a real system, you'd compare with a stored hash
         # For now, just log a warning
-        print(f"⚠️  Contract is frozen. Current hash: {current_hash[:16]}...")
+        print(f"⚠️  Contract is frozen (v{CONTRACT_VERSION}). Current hash: {current_hash[:16]}...")
         
         # You could also load a stored hash from file/database
         # and compare:
@@ -351,4 +429,4 @@ if __name__ == "__main__":
     # Check frozen status
     GestureActionContract.check_frozen()
     
-    print("\nContract is ready for use!")
+    print("\nContract v1.1 with IDLE class is ready for use!")

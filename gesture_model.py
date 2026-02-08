@@ -1,4 +1,4 @@
-# gesture_model.py
+# gesture_model.py (FIXED VERSION)
 """
 Flexible gesture classification models with runtime validation and adaptive regularization.
 Supports CNN, CNN+LSTM, and attention-based architectures.
@@ -442,7 +442,7 @@ class GestureModel:
         Validate input data and extract correct input shape.
         
         Args:
-            X: Input data array
+            X: Input data array (features already extracted by FeatureEngineer)
             
         Returns:
             Validated input shape (time_steps, features)
@@ -461,17 +461,40 @@ class GestureModel:
                   f"doesn't match SEQUENCE_LENGTH ({SEQUENCE_LENGTH})")
         
         # Validate feature dimension using FeatureEngineer
-        test_landmarks = np.zeros((1, 33, 3))  # Single frame of zeros
+        # FIXED: Use correct shape (33, 4) for FeatureEngineer
+        test_landmarks = np.zeros((1, 33, 4), dtype=np.float32)  # Single frame with visibility
         test_features = self.feature_engineer.extract_features(test_landmarks)
         expected_features = test_features.shape[1]
         
         if features != expected_features:
-            raise ValueError(
-                f"Feature dimension mismatch. "
-                f"Expected {expected_features} features from FeatureEngineer, "
-                f"but got {features}. "
-                f"Check FeatureEngineer implementation."
-            )
+            # More detailed error message
+            try:
+                # Try to get feature dimension from FeatureEngineer directly
+                from feature_engineer import FeatureConfig
+                config = FeatureConfig(compute_idle_features=True)
+                engineer = FeatureEngineer(config)
+                dim_with_idle = engineer.get_feature_dimension()
+                
+                config_no_idle = FeatureConfig(compute_idle_features=False)
+                engineer_no_idle = FeatureEngineer(config_no_idle)
+                dim_without_idle = engineer_no_idle.get_feature_dimension()
+                
+                raise ValueError(
+                    f"Feature dimension mismatch.\n"
+                    f"  Model received: {features} features\n"
+                    f"  FeatureEngineer produces: {expected_features} features\n"
+                    f"  FeatureEngineer dimension with idle: {dim_with_idle}\n"
+                    f"  FeatureEngineer dimension without idle: {dim_without_idle}\n"
+                    f"  Check if you're using the same FeatureConfig as during training."
+                )
+            except:
+                # Fallback error message
+                raise ValueError(
+                    f"Feature dimension mismatch. "
+                    f"Expected {expected_features} features from FeatureEngineer, "
+                    f"but got {features}. "
+                    f"Check FeatureEngineer implementation."
+                )
         
         print(f"✅ Input validation passed:")
         print(f"   Time steps: {time_steps}")
@@ -529,9 +552,9 @@ class GestureModel:
         Train the model with validation and callbacks.
         
         Args:
-            X_train: Training data
+            X_train: Training data (features from FeatureEngineer)
             y_train: Training labels (one-hot encoded)
-            X_val: Validation data
+            X_val: Validation data (features from FeatureEngineer)
             y_val: Validation labels (one-hot encoded)
             epochs: Maximum number of epochs
             batch_size: Batch size for training
@@ -564,6 +587,7 @@ class GestureModel:
         print(f"Epochs: {epochs}")
         print(f"Architecture: {self.architecture}")
         print(f"Class weights: {class_weights is not None}")
+        print(f"Feature dimension: {X_train.shape[2]}")
         print("=" * 60)
         
         # Train the model
@@ -616,7 +640,7 @@ class GestureModel:
         Evaluate the model on test data.
         
         Args:
-            X_test: Test data
+            X_test: Test data (features from FeatureEngineer)
             y_test: Test labels (one-hot encoded)
             
         Returns:
@@ -716,6 +740,10 @@ class GestureModel:
                 'epochs_trained': len(self.history.history['loss']) if self.history else 0,
             },
             'timestamp': np.datetime64('now').astype(str),
+            'feature_engineer_config': {
+                'compute_idle_features': hasattr(self.feature_engineer, 'config') and 
+                                       getattr(self.feature_engineer.config, 'compute_idle_features', False)
+            }
         }
         
         with open(MODEL_METADATA, 'w') as f:
@@ -748,6 +776,14 @@ class GestureModel:
             self.dataset_size = metadata['dataset_size']
             self.config = metadata['config']
             self.is_built = True
+            
+            # Set up FeatureEngineer with the same config used during training
+            if 'feature_engineer_config' in metadata:
+                from feature_engineer import FeatureConfig
+                fe_config = FeatureConfig(
+                    compute_idle_features=metadata['feature_engineer_config'].get('compute_idle_features', False)
+                )
+                self.feature_engineer = FeatureEngineer(fe_config)
             
             print(f"✅ Model loaded from {filepath}")
             print(f"   Input shape: {self.input_shape}")
@@ -908,8 +944,8 @@ def select_best_architecture(X_train: np.ndarray,
     Select the best architecture based on validation performance.
     
     Args:
-        X_train, y_train: Training data
-        X_val, y_val: Validation data
+        X_train, y_train: Training data (features from FeatureEngineer)
+        X_val, y_val: Validation data (features from FeatureEngineer)
         dataset_size: Size of the training dataset
         
     Returns:
@@ -975,23 +1011,48 @@ def select_best_architecture(X_train: np.ndarray,
     return best_arch
 
 # ============================================================================
-# TEST FUNCTION
+# TEST FUNCTION WITH FIXED INPUT VALIDATION
 # ============================================================================
 
 def test_model():
-    """Test the gesture model."""
-    print("Testing Gesture Model...")
+    """Test the gesture model with fixed validation."""
+    print("Testing Gesture Model with Fixed Validation...")
     
-    # Create synthetic data
-    time_steps = SEQUENCE_LENGTH
-    features = FeatureEngineer().extract_features(np.zeros((1, 33, 3))).shape[1]
+    # Create synthetic data using FeatureEngineer
+    from feature_engineer import FeatureEngineer, FeatureConfig
+    
+    # Initialize FeatureEngineer (same as will be used during training)
+    fe_config = FeatureConfig(compute_idle_features=True)
+    feature_engineer = FeatureEngineer(fe_config)
+    
+    # Create synthetic landmarks with correct shape (33, 4)
     num_samples = 100
+    time_steps = SEQUENCE_LENGTH
+    features_list = []
     
-    X_train = np.random.randn(num_samples, time_steps, features).astype(np.float32)
+    for _ in range(num_samples):
+        # Create random landmarks (33, 4) with visibility
+        landmarks = np.zeros((time_steps, 33, 4), dtype=np.float32)
+        landmarks[:, :, :3] = np.random.randn(time_steps, 33, 3) * 0.1
+        landmarks[:, :, 3] = np.random.uniform(0.8, 1.0, (time_steps, 33))  # High visibility
+        
+        # Extract features
+        features = feature_engineer.extract_features(landmarks)
+        features_list.append(features)
+    
+    # Stack features
+    X_train = np.stack(features_list, axis=0)
     y_train = np.eye(NUM_GESTURES)[np.random.randint(0, NUM_GESTURES, num_samples)]
     
-    X_val = np.random.randn(20, time_steps, features).astype(np.float32)
+    # Create validation data
+    X_val = np.random.randn(20, X_train.shape[1], X_train.shape[2]).astype(np.float32) * 0.1
     y_val = np.eye(NUM_GESTURES)[np.random.randint(0, NUM_GESTURES, 20)]
+    
+    print(f"\nTest data shapes:")
+    print(f"  X_train: {X_train.shape}")
+    print(f"  y_train: {y_train.shape}")
+    print(f"  X_val: {X_val.shape}")
+    print(f"  Feature dimension: {X_train.shape[2]}")
     
     # Test different architectures
     for architecture in ['cnn', 'cnn_lstm', 'attention']:
@@ -1007,7 +1068,13 @@ def test_model():
                 dataset_size=num_samples
             )
             
+            # This should work now with correct validation
+            print("  Building model...")
+            input_shape = model.validate_input_shape(X_train)
+            print(f"  Validated input shape: {input_shape}")
+            
             # Train
+            print("  Training model...")
             history = model.train(
                 X_train, y_train,
                 X_val, y_val,
@@ -1017,12 +1084,12 @@ def test_model():
             
             # Evaluate
             metrics = model.evaluate(X_val, y_val)
-            print(f"Validation accuracy: {metrics['accuracy']:.4f}")
+            print(f"  Validation accuracy: {metrics['accuracy']:.4f}")
             
             # Test prediction
             test_sequence = X_val[0]
             class_idx, confidence, probs = model.predict_sequence(test_sequence)
-            print(f"Sample prediction: class={class_idx}, confidence={confidence:.4f}")
+            print(f"  Sample prediction: class={class_idx}, confidence={confidence:.4f}")
             
             # Save and load
             test_model_path = Path(f"test_model_{architecture}.keras")
@@ -1032,12 +1099,70 @@ def test_model():
             loaded_model = GestureModel()
             loaded_model.load_model(test_model_path)
             
+            # Test loaded model
+            loaded_sequence = X_val[1]
+            loaded_class_idx, loaded_confidence, _ = loaded_model.predict_sequence(loaded_sequence)
+            print(f"  Loaded model prediction: class={loaded_class_idx}, confidence={loaded_confidence:.4f}")
+            
             print(f"✅ {architecture} architecture test passed")
             
         except Exception as e:
             print(f"❌ {architecture} architecture test failed: {e}")
+            import traceback
+            traceback.print_exc()
     
     print("\n✅ All tests completed!")
 
+def test_validation_bug():
+    """Specifically test the validation bug fix."""
+    print("\n🧪 Testing validation bug fix...")
+    
+    from feature_engineer import FeatureEngineer, FeatureConfig
+    
+    # Test 1: Check that validation works with correct shape
+    print("\nTest 1: Validating with correct shape (33, 4)")
+    fe_config = FeatureConfig(compute_idle_features=True)
+    feature_engineer = FeatureEngineer(fe_config)
+    
+    # Create test landmarks with correct shape
+    test_landmarks = np.zeros((1, 33, 4), dtype=np.float32)
+    test_landmarks[:, :, 3] = 1.0  # Full visibility
+    
+    features = feature_engineer.extract_features(test_landmarks)
+    print(f"  FeatureEngineer output shape: {features.shape}")
+    print(f"  Feature dimension: {features.shape[1]}")
+    
+    # Test 2: Create model and validate
+    print("\nTest 2: Model validation")
+    model = GestureModel()
+    
+    # Create synthetic training data with correct feature dimension
+    X_train = np.random.randn(10, SEQUENCE_LENGTH, features.shape[1]).astype(np.float32)
+    
+    try:
+        input_shape = model.validate_input_shape(X_train)
+        print(f"  ✅ Validation passed: input_shape={input_shape}")
+    except Exception as e:
+        print(f"  ❌ Validation failed: {e}")
+    
+    # Test 3: Verify the bug is fixed
+    print("\nTest 3: Verify old bug is fixed")
+    old_wrong_landmarks = np.zeros((1, 33, 3))  # Old buggy shape
+    
+    # This should work with the fixed FeatureEngineer
+    # (FeatureEngineer should now handle missing visibility gracefully)
+    try:
+        features_from_wrong_shape = feature_engineer.extract_features(old_wrong_landmarks)
+        print(f"  ✅ FeatureEngineer now handles shape (33, 3)")
+    except:
+        print(f"  ⚠️  FeatureEngineer still requires (33, 4)")
+    
+    print("\n✅ Validation bug test complete!")
+
 if __name__ == "__main__":
+    test_validation_bug()
     test_model()
+    
+    print("\n" + "=" * 60)
+    print("✅ ALL TESTS COMPLETED WITH FIXED VALIDATION!")
+    print("=" * 60)

@@ -386,6 +386,43 @@ def run_pipeline(skip_data_collection: bool = False):
     print("PIPELINE EXECUTION COMPLETE")
     print("=" * 60)
 
+def collect_idle_data():
+    """Collect idle/background data to prevent false positives."""
+    validate_paths()
+    
+    # Import here to avoid circular imports
+    GestureDataCollector = import_data_collector()
+    
+    print("\n" + "=" * 60)
+    print("IDLE DATA COLLECTION - CRITICAL FOR FALSE POSITIVE PREVENTION")
+    print("=" * 60)
+    print("This collects data of you standing still/naturally moving.")
+    print("Without this, the model will hallucinate gestures constantly!")
+    print("=" * 60)
+    
+    user_id = input("Enter your user ID (default: anonymous): ").strip() or "anonymous"
+    
+    collector = GestureDataCollector(user_id=user_id)
+    
+    print("\nHow many idle sequences to collect?")
+    print(f"Recommendation: At least {MIN_SAMPLES_PER_GESTURE * 2} samples")
+    samples = int(input(f"Number (default: {MIN_SAMPLES_PER_GESTURE * 2}): ") or MIN_SAMPLES_PER_GESTURE * 2)
+    
+    print("\nStarting idle data collection in 3 seconds...")
+    print("Stand naturally in frame. Make small movements.")
+    time.sleep(3)
+    
+    collector.collect_idle_data(
+        camera_index=CAMERA_INDEX,
+        duration_seconds=300,  # 5 minutes max
+        samples_per_session=samples
+    )
+    
+    # Print dataset stats
+    from data_collector import DatasetManager
+    manager = DatasetManager()
+    manager.print_dataset_summary()
+
 # ============================================================================
 # MAIN ENTRY POINT
 # ============================================================================
@@ -492,3 +529,4 @@ if __name__ == "__main__":
         print("Usage: python main.py [collect|train|demo|test|all|validate]")
         print("\nRun 'python main.py --help' for detailed usage information.")
         sys.exit(1)
+

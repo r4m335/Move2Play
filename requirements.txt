@@ -43,6 +43,8 @@ websockets>=10.0
 # Performance monitoring
 psutil>=5.9.0
 memory_profiler>=0.60.0
+scipy>=1.9.0
+
 
 # Platform-specific dependencies (optional)
 # For GPU support on Windows/Linux:

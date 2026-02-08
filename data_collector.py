@@ -328,6 +328,174 @@ class GestureDataCollector:
         print(f"   Sequences collected: {sequence_count}")
         print(f"   User: {self.user_id}")
     
+    def collect_idle_data(self, 
+                     camera_index: int = CAMERA_INDEX,
+                     duration_seconds: int = 60,
+                     samples_per_session: int = 30):
+        """
+        Collect idle/background data (standing still, natural movements).
+        
+        Args:
+            camera_index: Camera device index
+            duration_seconds: Total duration to collect idle data
+            samples_per_session: Number of idle sequences to collect
+        """
+        print("\n" + "=" * 60)
+        print("COLLECTING IDLE/BACKGROUND DATA")
+        print("=" * 60)
+        print("IMPORTANT: This prevents false positives!")
+        print("=" * 60)
+        print("INSTRUCTIONS:")
+        print("1. Stand naturally in frame")
+        print("2. Make small natural movements (breathing, shifting weight)")
+        print("3. Don't perform any specific gestures")
+        print("4. The system will automatically collect samples")
+        print("=" * 60)
+        
+        # Initialize camera
+        cap = self._initialize_camera(camera_index)
+        if cap is None:
+            print(f"❌ Failed to initialize camera {camera_index}")
+            return
+        
+        # Get camera info
+        camera_fps = cap.get(cv2.CAP_PROP_FPS)
+        if camera_fps <= 0:
+            camera_fps = 30.0
+        
+        camera_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        camera_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        camera_resolution = f"{camera_width}x{camera_height}"
+        
+        gesture_name = "idle"
+        sequence_count = 0
+        start_time = time.time()
+        
+        # Create idle directory if it doesn't exist
+        idle_dir = self.output_dir / "idle"
+        idle_dir.mkdir(exist_ok=True, parents=True)
+        
+        print(f"Collecting {samples_per_session} idle sequences...")
+        print("Press 'q' to stop early")
+        
+        while sequence_count < samples_per_session and (time.time() - start_time) < duration_seconds:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            
+            # Process frame
+            pose_result = self.pose_extractor.process_frame(frame)
+            
+            if pose_result is not None:
+                # Randomly decide to save a sequence (simulating natural intervals)
+                if np.random.random() < 0.02:  # 2% chance per frame
+                    # Collect a sequence
+                    current_sequence = []
+                    frame_timestamps = []
+                    
+                    for _ in range(SEQUENCE_LENGTH):
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        
+                        pose_result = self.pose_extractor.process_frame(frame)
+                        if pose_result is not None:
+                            current_sequence.append(pose_result.landmarks)
+                            frame_timestamps.append(time.time())
+                        
+                        # Show live view
+                        display_frame = self._draw_ui(
+                            frame, pose_result, "idle", False, 
+                            len(current_sequence), sequence_count, None
+                        )
+                        cv2.imshow('Collecting Idle Data', display_frame)
+                        
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            cap.release()
+                            cv2.destroyAllWindows()
+                            return
+                    
+                    if len(current_sequence) >= self.min_valid_frames:
+                        # Save idle sequence
+                        sequence_array = self._prepare_idle_sequence(current_sequence)
+                        
+                        # Create metadata
+                        metadata = RecordingMetadata(
+                            user_id=self.user_id,
+                            session_id=datetime.now().strftime("%Y%m%d_%H%M%S"),
+                            gesture="idle",
+                            timestamp=datetime.now().isoformat(),
+                            duration_seconds=frame_timestamps[-1] - frame_timestamps[0] if frame_timestamps else 0.0,
+                            camera_fps=camera_fps,
+                            camera_resolution=camera_resolution,
+                            camera_index=camera_index,
+                            total_frames=len(frame_timestamps),
+                            valid_frames=len(current_sequence),
+                            missing_frames=len(frame_timestamps) - len(current_sequence),
+                            sequence_length=SEQUENCE_LENGTH,
+                            avg_confidence=0.8,  # Placeholder
+                            min_confidence=0.7,
+                            max_confidence=0.9,
+                            frame_gap_indices=[],
+                            pose_model="mediapipe_pose_v1",
+                            normalization_method="torso_length"
+                        )
+                        
+                        # Save
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                        filename_base = f"idle_{self.user_id}_{timestamp}"
+                        sequence_path = idle_dir / f"{filename_base}.npy"
+                        
+                        np.save(sequence_path, sequence_array)
+                        
+                        metadata_path = sequence_path.with_suffix('.json')
+                        with open(metadata_path, 'w') as f:
+                            json.dump(metadata.to_dict(), f, indent=2, default=str)
+                        
+                        sequence_count += 1
+                        print(f"✅ Saved idle sequence {sequence_count}/{samples_per_session}")
+            
+            # Show live view
+            display_frame = self._draw_ui(
+                frame, pose_result, "idle", False, 0, sequence_count, None
+            )
+            cv2.putText(display_frame, f"Idle samples: {sequence_count}/{samples_per_session}", 
+                    (10, display_frame.shape[0] - 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.imshow('Collecting Idle Data', display_frame)
+            
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        
+        cap.release()
+        cv2.destroyAllWindows()
+        
+        print(f"\n✅ Collected {sequence_count} idle sequences")
+        print("This will significantly reduce false positives!")
+
+    def _prepare_idle_sequence(self, sequence: list) -> np.ndarray:
+        """Prepare idle sequence array."""
+        if len(sequence) == 0:
+            return np.zeros((SEQUENCE_LENGTH, 33, 3), dtype=np.float32)
+        
+        # Stack all valid frames
+        sequence_array = np.stack(sequence, axis=0)
+        
+        # Pad or truncate to SEQUENCE_LENGTH
+        if sequence_array.shape[0] < SEQUENCE_LENGTH:
+            pad_amount = SEQUENCE_LENGTH - sequence_array.shape[0]
+            sequence_array = np.pad(
+                sequence_array,
+                ((0, pad_amount), (0, 0), (0, 0)),
+                mode='constant',
+                constant_values=0
+            )
+        elif sequence_array.shape[0] > SEQUENCE_LENGTH:
+            start = (sequence_array.shape[0] - SEQUENCE_LENGTH) // 2
+            sequence_array = sequence_array[start:start + SEQUENCE_LENGTH]
+        
+        return sequence_array.astype(np.float32)
+    
     def _analyze_jogging_pattern(self, hip_positions: List[float], fps: float) -> Dict[str, float]:
         """
         Analyze jogging-in-place pattern from hip vertical movements.
