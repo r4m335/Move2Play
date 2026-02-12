@@ -15,7 +15,7 @@ from pathlib import Path
 # Import from config
 from config import (
     GESTURE_CLASSES, NUM_GESTURES, SEQUENCE_LENGTH,
-    FINAL_MODEL, MODEL_METADATA, CONTRACT_EXPORT
+    FINAL_MODEL, MODEL_METADATA_FILE, CONTRACT_EXPORT
 )
 from feature_engineer import FeatureEngineer
 
@@ -766,7 +766,7 @@ class GestureModel:
         
         # Load metadata
         if MODEL_METADATA.exists():
-            with open(MODEL_METADATA, 'r') as f:
+            with open(MODEL_METADATA_FILE, 'w') as f:
                 metadata = json.load(f)
             
             self.input_shape = tuple(metadata['input_shape'])

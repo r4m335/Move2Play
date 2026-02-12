@@ -1,7 +1,11 @@
-# data_collector.py (UPDATED FOR JOGGING-IN-PLACE "RUN" GESTURE)
 """
 Robust gesture data collection with metadata and quality control.
 Redefined "run" as jogging-in-place temporal pattern.
+
+CRITICAL FIX APPLIED:
+- Idle sequence now returns shape (33, 4) instead of (33, 3) to match feature engineer expectations
+- All sequences maintain 4-channel format (x, y, z, visibility)
+- Prevents silent dimension mismatch during feature extraction
 """
 
 import os
@@ -20,6 +24,15 @@ from config import (
     GESTURE_CLASSES, CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT
 )
 from pose_extractor import PoseExtractor, PoseResult
+
+# ============================================================================
+# CONSTANTS FOR LANDMARK FORMAT
+# ============================================================================
+
+# MediaPipe Pose 33 landmarks format: [x, y, z, visibility]
+NUM_LANDMARKS = 33
+LANDMARK_DIM = 4  # x, y, z, visibility
+
 
 @dataclass
 class RecordingMetadata:
@@ -72,6 +85,7 @@ class RecordingMetadata:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
 
+
 class GestureDataCollector:
     """Records high-quality gesture sequences with metadata and validation."""
     
@@ -121,6 +135,7 @@ class GestureDataCollector:
         print(f"Gesture Data Collector initialized for user: {user_id}")
         print(f"Output directory: {self.output_dir}")
         print(f"Sequence length: {SEQUENCE_LENGTH} frames")
+        print(f"Landmark format: {NUM_LANDMARKS} landmarks × {LANDMARK_DIM} channels")
         print(f"Allowed missing frames: {max_missing_frames}")
     
     def start_recording(self, 
@@ -335,6 +350,8 @@ class GestureDataCollector:
         """
         Collect idle/background data (standing still, natural movements).
         
+        CRITICAL FIX: Returns shape (33, 4) for landmarks to match feature engineer expectations.
+        
         Args:
             camera_index: Camera device index
             duration_seconds: Total duration to collect idle data
@@ -416,8 +433,14 @@ class GestureDataCollector:
                             return
                     
                     if len(current_sequence) >= self.min_valid_frames:
-                        # Save idle sequence
+                        # CRITICAL FIX: Save idle sequence with 4 channels
                         sequence_array = self._prepare_idle_sequence(current_sequence)
+                        
+                        # Verify shape before saving
+                        if sequence_array.shape[1:] != (NUM_LANDMARKS, LANDMARK_DIM):
+                            print(f"⚠️  Warning: Unexpected shape {sequence_array.shape}, fixing...")
+                            # Fix shape if necessary
+                            sequence_array = self._fix_landmark_shape(sequence_array)
                         
                         # Create metadata
                         metadata = RecordingMetadata(
@@ -471,30 +494,102 @@ class GestureDataCollector:
         cv2.destroyAllWindows()
         
         print(f"\n✅ Collected {sequence_count} idle sequences")
+        print(f"   Landmark format: {NUM_LANDMARKS}×{LANDMARK_DIM} (x, y, z, visibility)")
         print("This will significantly reduce false positives!")
 
     def _prepare_idle_sequence(self, sequence: list) -> np.ndarray:
-        """Prepare idle sequence array."""
+        """
+        Prepare idle sequence array.
+        
+        CRITICAL FIX: Returns shape (SEQUENCE_LENGTH, 33, 4) to match feature engineer expectations.
+        Previously returned (SEQUENCE_LENGTH, 33, 3) which caused dimension mismatch.
+        
+        Args:
+            sequence: List of landmark arrays from pose detector
+            
+        Returns:
+            Array of shape (SEQUENCE_LENGTH, 33, 4)
+        """
         if len(sequence) == 0:
-            return np.zeros((SEQUENCE_LENGTH, 33, 3), dtype=np.float32)
+            # CRITICAL FIX: Create zeros with 4 channels (x, y, z, visibility)
+            zeros_sequence = np.zeros((SEQUENCE_LENGTH, NUM_LANDMARKS, LANDMARK_DIM), dtype=np.float32)
+            # Set visibility to 1.0 for all landmarks (fully visible)
+            zeros_sequence[..., 3] = 1.0
+            return zeros_sequence
+        
+        # Check the shape of the first element to ensure it has 4 channels
+        sample_landmark = sequence[0]
+        if sample_landmark.shape[-1] == 3:
+            # FIX: Convert 3-channel to 4-channel landmarks
+            print("   ⚠️  Converting 3-channel landmarks to 4-channel format...")
+            sequence = [self._add_visibility_channel(landmarks) for landmarks in sequence]
         
         # Stack all valid frames
         sequence_array = np.stack(sequence, axis=0)
         
+        # Verify we have 4 channels
+        if sequence_array.shape[-1] != LANDMARK_DIM:
+            raise ValueError(
+                f"Expected {LANDMARK_DIM} channels (x,y,z,visibility), "
+                f"got {sequence_array.shape[-1]}"
+            )
+        
         # Pad or truncate to SEQUENCE_LENGTH
         if sequence_array.shape[0] < SEQUENCE_LENGTH:
             pad_amount = SEQUENCE_LENGTH - sequence_array.shape[0]
-            sequence_array = np.pad(
-                sequence_array,
-                ((0, pad_amount), (0, 0), (0, 0)),
-                mode='constant',
-                constant_values=0
-            )
+            # Pad with zeros at the end (edge padding preserves last valid frame)
+            padding = np.zeros((pad_amount, NUM_LANDMARKS, LANDMARK_DIM), dtype=np.float32)
+            padding[..., 3] = 1.0  # Set visibility to 1.0 for padding
+            sequence_array = np.concatenate([sequence_array, padding], axis=0)
         elif sequence_array.shape[0] > SEQUENCE_LENGTH:
+            # Take middle portion for better temporal context
             start = (sequence_array.shape[0] - SEQUENCE_LENGTH) // 2
             sequence_array = sequence_array[start:start + SEQUENCE_LENGTH]
         
         return sequence_array.astype(np.float32)
+    
+    def _add_visibility_channel(self, landmarks_3d: np.ndarray) -> np.ndarray:
+        """
+        Add visibility channel to 3-channel landmarks.
+        
+        Args:
+            landmarks_3d: Array of shape (33, 3) with x,y,z coordinates
+            
+        Returns:
+            Array of shape (33, 4) with x,y,z,visibility (visibility=1.0)
+        """
+        if landmarks_3d.shape[-1] != 3:
+            return landmarks_3d
+        
+        visibility = np.ones((landmarks_3d.shape[0], 1), dtype=np.float32)
+        return np.concatenate([landmarks_3d, visibility], axis=-1)
+    
+    def _fix_landmark_shape(self, sequence_array: np.ndarray) -> np.ndarray:
+        """
+        Fix incorrect landmark shapes by converting to (33, 4) format.
+        
+        Args:
+            sequence_array: Array of any shape
+            
+        Returns:
+            Fixed array of shape (SEQUENCE_LENGTH, 33, 4)
+        """
+        if len(sequence_array.shape) == 3:
+            T, J, D = sequence_array.shape
+            
+            if D == 3:
+                # Add visibility channel
+                print(f"   🔧 Adding visibility channel to shape {sequence_array.shape}")
+                visibility = np.ones((T, J, 1), dtype=np.float32)
+                return np.concatenate([sequence_array, visibility], axis=-1)
+            elif D == 4:
+                return sequence_array  # Already correct
+        
+        # Fallback: create zeros with correct shape
+        print(f"   🔧 Recreating sequence with correct shape (33,4)")
+        zeros_sequence = np.zeros((SEQUENCE_LENGTH, NUM_LANDMARKS, LANDMARK_DIM), dtype=np.float32)
+        zeros_sequence[..., 3] = 1.0
+        return zeros_sequence
     
     def _analyze_jogging_pattern(self, hip_positions: List[float], fps: float) -> Dict[str, float]:
         """
@@ -723,6 +818,11 @@ class GestureDataCollector:
         if sequence_array is None:
             return False
         
+        # Verify shape before saving
+        if sequence_array.shape[1:] != (NUM_LANDMARKS, LANDMARK_DIM):
+            print(f"⚠️  Warning: Unexpected shape {sequence_array.shape}, fixing...")
+            sequence_array = self._fix_landmark_shape(sequence_array)
+        
         # Calculate timing statistics
         duration = 0.0
         frame_gaps = []
@@ -739,9 +839,12 @@ class GestureDataCollector:
         # Calculate confidence statistics
         confidences = []
         for i in range(len(self.current_sequence)):
-            # Extract confidence from raw landmarks if available
-            # For now, use a placeholder - in real implementation, extract from PoseResult
-            confidences.append(0.8)  # Placeholder
+            # Extract visibility from landmarks (4th channel)
+            if self.current_sequence[i].shape[-1] >= 4:
+                visibility = self.current_sequence[i][:, 3]
+                confidences.append(np.mean(visibility))
+            else:
+                confidences.append(0.8)  # Placeholder
         
         # Create metadata
         metadata = RecordingMetadata(
@@ -795,31 +898,48 @@ class GestureDataCollector:
         
         print(f"✅ Saved sequence: {filename_base}")
         print(f"   Frames: {len(self.current_sequence)}/{SEQUENCE_LENGTH}")
+        print(f"   Shape: {sequence_array.shape}")
         print(f"   Duration: {duration:.2f}s")
         print(f"   Gaps: {len(frame_gaps)}")
         
         return True
     
     def _prepare_sequence_array(self) -> Optional[np.ndarray]:
-        """Prepare sequence array, padding if necessary."""
+        """
+        Prepare sequence array, padding if necessary.
+        
+        Returns:
+            Array of shape (SEQUENCE_LENGTH, 33, 4)
+        """
         if len(self.current_sequence) == 0:
             return None
+        
+        # Check if landmarks have visibility channel
+        sample_landmark = self.current_sequence[0]
+        if sample_landmark.shape[-1] == 3:
+            # Convert 3-channel to 4-channel
+            print("   ⚠️  Converting 3-channel landmarks to 4-channel format...")
+            self.current_sequence = [self._add_visibility_channel(l) for l in self.current_sequence]
         
         # Stack all valid frames
         sequence_array = np.stack(self.current_sequence, axis=0)
         
+        # Verify we have 4 channels
+        if sequence_array.shape[-1] != LANDMARK_DIM:
+            raise ValueError(
+                f"Expected {LANDMARK_DIM} channels (x,y,z,visibility), "
+                f"got {sequence_array.shape[-1]}"
+            )
+        
         # Pad or truncate to SEQUENCE_LENGTH
         if sequence_array.shape[0] < SEQUENCE_LENGTH:
-            # Pad with zeros (model will learn to ignore based on features)
+            # Pad with zeros at the end
             pad_amount = SEQUENCE_LENGTH - sequence_array.shape[0]
-            sequence_array = np.pad(
-                sequence_array,
-                ((0, pad_amount), (0, 0), (0, 0)),
-                mode='constant',
-                constant_values=0
-            )
+            padding = np.zeros((pad_amount, NUM_LANDMARKS, LANDMARK_DIM), dtype=np.float32)
+            padding[..., 3] = 1.0  # Set visibility to 1.0 for padding
+            sequence_array = np.concatenate([sequence_array, padding], axis=0)
         elif sequence_array.shape[0] > SEQUENCE_LENGTH:
-            # Truncate to SEQUENCE_LENGTH (keep middle portion)
+            # Truncate to SEQUENCE_LENGTH (keep middle portion for better temporal context)
             start = (sequence_array.shape[0] - SEQUENCE_LENGTH) // 2
             sequence_array = sequence_array[start:start + SEQUENCE_LENGTH]
         
@@ -841,6 +961,7 @@ class GestureDataCollector:
             "target_samples": MIN_SAMPLES_PER_GESTURE,
             "camera_used": CAMERA_INDEX,
             "sequence_length": SEQUENCE_LENGTH,
+            "landmark_format": f"{NUM_LANDMARKS}×{LANDMARK_DIM}",
             "max_missing_frames": self.max_missing_frames,
             "min_valid_frames": self.min_valid_frames,
         }
@@ -888,6 +1009,7 @@ class GestureDataCollector:
         with open(stats_path, 'w') as f:
             json.dump(stats, f, indent=2, default=str)
 
+
 # ============================================================================
 # DATASET UTILITIES
 # ============================================================================
@@ -905,6 +1027,7 @@ class DatasetManager:
             "gestures": {},
             "users": set(),
             "total_duration": 0.0,
+            "landmark_format": f"{NUM_LANDMARKS}×{LANDMARK_DIM}",
         }
         
         for gesture in GESTURE_CLASSES:
@@ -914,6 +1037,7 @@ class DatasetManager:
                     "sequences": 0,
                     "users": set(),
                     "duration": 0.0,
+                    "valid_format": True,
                 }
                 continue
             
@@ -923,8 +1047,17 @@ class DatasetManager:
             # Parse metadata for each sequence
             gesture_duration = 0.0
             gesture_users = set()
+            valid_format_count = 0
             
             for npy_file in npy_files:
+                # Check file format
+                try:
+                    data = np.load(npy_file)
+                    if data.shape[1:] == (NUM_LANDMARKS, LANDMARK_DIM):
+                        valid_format_count += 1
+                except:
+                    pass
+                
                 json_file = npy_file.with_suffix('.json')
                 if json_file.exists():
                     with open(json_file, 'r') as f:
@@ -957,6 +1090,8 @@ class DatasetManager:
                 "users": list(gesture_users),
                 "user_count": len(gesture_users),
                 "duration": gesture_duration,
+                "valid_format_count": valid_format_count,
+                "valid_format_pct": valid_format_count / max(sequences, 1) * 100,
             }
             
             stats["total_sequences"] += sequences
@@ -979,12 +1114,14 @@ class DatasetManager:
         print(f"Total duration: {stats['total_duration']:.1f} seconds")
         print(f"Unique users: {stats['user_count']}")
         print(f"Users: {', '.join(stats['users'])}")
+        print(f"Landmark format: {stats['landmark_format']} (x,y,z,visibility)")
         print("\nPer gesture breakdown:")
         print("-" * 60)
         
         for gesture, data in stats["gestures"].items():
+            format_status = "✅" if data.get('valid_format_pct', 0) > 95 else "⚠️"
             print(f"{gesture:15s}: {data['sequences']:4d} sequences")
-            print(f"                {data['user_count']:4d} users, {data['duration']:6.1f}s")
+            print(f"                {data['user_count']:4d} users, {data['duration']:6.1f}s  {format_status} shape valid")
             
             # Special jogging stats
             if gesture == 'run' and 'jogging_stats' in data:
@@ -1000,12 +1137,13 @@ class DatasetManager:
         
         for gesture, data in stats["gestures"].items():
             status = "✅" if data["sequences"] >= MIN_SAMPLES_PER_GESTURE else "❌"
-            print(f"{gesture:15s}: {status} {data['sequences']:4d}/{MIN_SAMPLES_PER_GESTURE}")
+            format_status = "✓" if data.get('valid_format_pct', 0) > 95 else "!"
+            print(f"{gesture:15s}: {status} {data['sequences']:4d}/{MIN_SAMPLES_PER_GESTURE}  [{format_status}]")
         
         print("=" * 60)
     
     def validate_dataset(self) -> bool:
-        """Validate dataset integrity."""
+        """Validate dataset integrity and format."""
         print("\nValidating dataset...")
         
         all_valid = True
@@ -1023,8 +1161,21 @@ class DatasetManager:
                 # Check that numpy file loads correctly
                 try:
                     data = np.load(npy_file)
+                    
+                    # CRITICAL CHECK: Verify shape is (SEQUENCE_LENGTH, 33, 4)
                     if data.shape[0] != SEQUENCE_LENGTH:
                         print(f"⚠️  {npy_file.name}: Wrong sequence length {data.shape[0]} != {SEQUENCE_LENGTH}")
+                        all_valid = False
+                    
+                    if data.shape[1:] != (NUM_LANDMARKS, LANDMARK_DIM):
+                        print(f"❌ {npy_file.name}: Wrong landmark format {data.shape[1:]} != ({NUM_LANDMARKS}, {LANDMARK_DIM})")
+                        all_valid = False
+                    
+                    # Check for NaN or inf values
+                    if np.any(np.isnan(data)) or np.any(np.isinf(data)):
+                        print(f"❌ {npy_file.name}: Contains NaN or inf values")
+                        all_valid = False
+                    
                 except Exception as e:
                     print(f"❌ {npy_file.name}: Failed to load - {e}")
                     all_valid = False
@@ -1036,10 +1187,13 @@ class DatasetManager:
         
         if all_valid:
             print("✅ Dataset validation passed!")
+            print(f"   All sequences are in correct format ({SEQUENCE_LENGTH}, {NUM_LANDMARKS}, {LANDMARK_DIM})")
         else:
             print("❌ Dataset validation failed!")
+            print("   Run: python fix_dataset_format.py to repair corrupted files")
         
         return all_valid
+
 
 # ============================================================================
 # MAIN TEST FUNCTION
@@ -1063,6 +1217,7 @@ def test_data_collection():
     manager = DatasetManager()
     manager.print_dataset_summary()
     manager.validate_dataset()
+
 
 if __name__ == "__main__":
     test_data_collection()

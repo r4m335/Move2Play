@@ -17,6 +17,7 @@ import warnings
 import json
 from pathlib import Path
 
+
 @dataclass
 class FeatureConfig:
     """Configuration for feature extraction."""
@@ -77,6 +78,7 @@ class FeatureConfig:
         import hashlib
         config_str = json.dumps(self.to_dict(), sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()[:8]
+
 
 class FeatureEngineer:
     """
@@ -1075,6 +1077,7 @@ class FeatureEngineer:
         config = FeatureConfig.from_dict(config_dict)
         return cls(config)
 
+
 # ============================================================================
 # FEATURE NORMALIZER (FIXED VERSION)
 # ============================================================================
@@ -1172,7 +1175,7 @@ class FeatureNormalizer:
         Returns:
             Tuple of (feature_dimension, config_hash)
         """
-        data = np.load(path)
+        data = np.load(path, allow_pickle=True)
         self.feature_means = data['means']
         self.feature_stds = data['stds']
         self.feature_dimension = int(data['dimension'])
@@ -1185,6 +1188,7 @@ class FeatureNormalizer:
             print(f"   Config hash: {self.config_hash}")
         
         return self.feature_dimension, self.config_hash
+
 
 # ============================================================================
 # MODEL METADATA MANAGER (NEW - CRITICAL FIX)
@@ -1323,8 +1327,9 @@ class ModelMetadata:
         from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+
 # ============================================================================
-# GESTURE MODEL VALIDATION (FIXED VERSION)
+# GESTURE MODEL VALIDATOR (FIXED VERSION)
 # ============================================================================
 
 class GestureModelValidator:
@@ -1427,6 +1432,10 @@ class GestureModelValidator:
             )
         
         return features
+
+
+
+
 
 # ============================================================================
 # TEST FUNCTIONS WITH COMPREHENSIVE VALIDATION
@@ -1792,123 +1801,6 @@ def run_comprehensive_tests():
     
     return passed == total
 
-# ============================================================================
-# INTEGRATION FIXES FOR EXISTING CODE
-# ============================================================================
-
-def apply_fixes_to_existing_code():
-    """
-    Provide code snippets to fix existing codebase.
-    These should be integrated into the appropriate files.
-    """
-    
-    fixes = {
-        'config.py': """
-# ADD TO config.py
-FEATURE_CONFIG = FeatureConfig(
-    compute_idle_features=True,  # MUST MATCH TRAINING
-    # ... other settings
-)
-
-# Store feature dimension in model metadata
-MODEL_METADATA = {
-    'feature_dimension': None,  # Will be set during training
-    'feature_config': FEATURE_CONFIG.to_dict(),
-    'classes': GESTURE_CLASSES,
-}
-""",
-        
-        'train.py': """
-# ADD TO train.py (training section)
-from feature_engineer import FeatureEngineer, ModelMetadata
-
-# Create feature engineer with config
-feature_engineer = FeatureEngineer(FEATURE_CONFIG)
-
-# Extract features
-train_features = feature_engineer.extract_features(train_landmarks)
-
-# Create and save metadata BEFORE training
-metadata = ModelMetadata()
-metadata.create(feature_engineer, GESTURE_CLASSES)
-metadata.save('model_metadata.json')
-
-# Save the exact feature dimension
-FEATURE_DIMENSION = feature_engineer.get_feature_dimension()
-print(f"Feature dimension: {FEATURE_DIMENSION}")
-
-# Build model with correct input shape
-model = build_model(
-    input_shape=(SEQUENCE_LENGTH, FEATURE_DIMENSION),
-    num_classes=len(GESTURE_CLASSES)
-)
-""",
-        
-        'inference.py': """
-# ADD TO inference.py (inference setup)
-from feature_engineer import FeatureEngineer, ModelMetadata, GestureModelValidator
-
-# Load metadata
-metadata = ModelMetadata.load('model_metadata.json')
-
-# Create feature engineer with SAME config as training
-feature_engineer = FeatureEngineer(FeatureConfig.from_dict(metadata.feature_config))
-
-# Validate setup
-if not metadata.validate_inference_setup(feature_engineer):
-    raise RuntimeError("Inference setup validation failed! Configuration mismatch.")
-
-# Create validator
-validator = GestureModelValidator(
-    expected_feature_dim=metadata.feature_dimension,
-    expected_sequence_length=SEQUENCE_LENGTH
-)
-
-# In inference loop:
-features = feature_engineer.extract_features(landmarks_sequence)
-features = validator.ensure_correct_shape(features)
-
-# Validate before prediction
-if not validator.validate_input_shape(features.reshape(1, SEQUENCE_LENGTH, -1)):
-    raise RuntimeError("Input validation failed!")
-
-prediction = model.predict(features.reshape(1, SEQUENCE_LENGTH, -1))
-""",
-        
-        'data_pipeline.py': """
-# FIX IN data_pipeline.py
-# Ensure idle class balancing uses same definition as features
-
-def balance_idle_class(features, labels, idle_class_idx):
-    '''
-    Balance idle class with same feature definition as inference.
-    '''
-    # Get idle samples
-    idle_mask = labels == idle_class_idx
-    
-    # Check if idle features are present in the data
-    # This assumes idle is class 0
-    if np.sum(idle_mask) > 0:
-        # Use same thresholds as inference
-        idle_conf_threshold = getattr(config, 'IDLE_CONFIDENCE_THRESHOLD', 0.8)
-        
-        # Apply thresholding consistently
-        # ... existing logic ...
-    
-    return features, labels
-"""
-    }
-    
-    print("\n" + "=" * 70)
-    print("INTEGRATION FIXES FOR EXISTING CODEBASE")
-    print("=" * 70)
-    
-    for file, fix in fixes.items():
-        print(f"\n📝 {file}:")
-        print("-" * 40)
-        print(fix)
-    
-    return fixes
 
 if __name__ == "__main__":
     # Run comprehensive tests

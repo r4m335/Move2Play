@@ -16,7 +16,8 @@ from config import (
     GESTURE_CLASSES, NUM_GESTURES,
     MIN_SAMPLES_PER_GESTURE, SEQUENCE_LENGTH,
     validate_paths, check_model_exists, get_model_path,
-    is_production
+    is_production,
+    initialize_system,
 )
 
 # Local imports (conditional to avoid circular imports)
@@ -113,7 +114,7 @@ def collect_data(gesture_list: Optional[list] = None,
     for gesture in GESTURE_CLASSES:
         gesture_dir = DATA_DIR / gesture
         if gesture_dir.exists():
-            npy_files = list(globe.glob(str(gesture_dir / "*.npy")))
+            npy_files = list(glob.glob(str(gesture_dir / "*.npy")))
             print(f"{gesture:15s}: {len(npy_files):4d} samples")
         else:
             print(f"{gesture:15s}: 0 samples (directory not created)")
@@ -140,7 +141,7 @@ def train_model(args: Optional[argparse.Namespace] = None):
             has_enough_data = False
             continue
             
-        samples = len(list(globe.glob(str(gesture_dir / "*.npy"))))
+        samples = len(list(glob.glob(str(gesture_dir / "*.npy"))))
         if samples < MIN_SAMPLES_PER_GESTURE:
             print(f"⚠️  Low samples for {gesture}: {samples}/{MIN_SAMPLES_PER_GESTURE}")
     

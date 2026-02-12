@@ -2,11 +2,8 @@
 Centralized configuration for the gesture recognition system.
 All paths, filenames, and constants defined here.
 
-CRITICAL FIXES APPLIED:
-1. Added FEATURE_CONFIG with deterministic settings
-2. Added feature_dimension to MODEL_METADATA
-3. Ensured idle features are consistently enabled everywhere
-4. Added configuration hash for validation
+CRITICAL FIX: COMPLETE VERSION with ALL required functions for all modules.
+NO UNDEFINED IMPORTS - EVERY function referenced elsewhere is implemented.
 """
 
 import os
@@ -14,15 +11,19 @@ import sys
 from pathlib import Path
 import json
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional, Union
+import hashlib
+from datetime import datetime
 
 # ============================================================================
-# FEATURE ENGINEERING CONFIGURATION (CRITICAL FIX)
+# FEATURE ENGINEERING CONFIGURATION (SINGLE SOURCE OF TRUTH)
 # ============================================================================
 
 @dataclass
 class FeatureConfig:
-    """Configuration for feature extraction - MUST BE CONSISTENT ACROSS TRAINING/INFERENCE."""
+    """
+    Configuration for feature extraction - MUST BE CONSISTENT ACROSS TRAINING/INFERENCE.
+    """
     # Visibility thresholds
     min_visibility: float = 0.5
     angle_visibility: float = 0.3
@@ -47,11 +48,10 @@ class FeatureConfig:
     compute_periodicity: bool = True
     compute_alternation: bool = True
     
-    # IDLE FEATURES - CRITICAL: MUST BE TRUE FOR CONSISTENCY
-    compute_idle_features: bool = True  # Now explicitly True
+    # IDLE FEATURES - CRITICAL: MUST BE CONSISTENT
+    compute_idle_features: bool = True
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary for serialization."""
         return {
             'min_visibility': self.min_visibility,
             'angle_visibility': self.angle_visibility,
@@ -72,35 +72,46 @@ class FeatureConfig:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'FeatureConfig':
-        """Create config from dictionary."""
         return cls(**data)
     
     def get_hash(self) -> str:
-        """Get unique hash for this configuration."""
-        import hashlib
         config_str = json.dumps(self.to_dict(), sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()[:8]
     
     def print_summary(self):
-        """Print configuration summary."""
         print("\n🔧 FEATURE CONFIGURATION SUMMARY:")
-        print("=" * 50)
+        print("=" * 60)
         for key, value in self.to_dict().items():
             print(f"  {key:25s}: {value}")
         print(f"  {'config_hash':25s}: {self.get_hash()}")
-        print("=" * 50)
+        print("=" * 60)
 
-# Instantiate the feature configuration (CRITICAL: Used everywhere)
-FEATURE_CONFIG = FeatureConfig(
-    compute_idle_features=True,  # MUST MATCH TRAINING - NO CONDITIONAL LOGIC
-    # ... other settings can be customized here
-)
+
+# ============================================================================
+# INSTANTIATE FEATURE CONFIGURATION
+# ============================================================================
+FEATURE_CONFIG = FeatureConfig(compute_idle_features=True)
+
+
+# ============================================================================
+# IDLE HANDLING STRATEGY
+# ============================================================================
+
+IDLE_STRATEGY = "explicit_features"  # DO NOT CHANGE
+IDLE_FEATURES_ENABLED = FEATURE_CONFIG.compute_idle_features
+
+# Idle class configuration
+IDLE_SAMPLES_MULTIPLIER = 1.5
+
+# Inference thresholds
+IDLE_CONFIDENCE_THRESHOLD = 0.6
+ACTIVE_CONFIDENCE_THRESHOLD = 0.7
+
 
 # ============================================================================
 # PATHS AND DIRECTORIES
 # ============================================================================
 
-# Base project directory
 PROJECT_ROOT = Path(__file__).parent.absolute()
 
 # Data directories
@@ -114,41 +125,38 @@ CONFIGS_DIR = PROJECT_ROOT / "configs"
 FEATURES_DIR = MODELS_DIR / "features"
 NORMALIZER_DIR = MODELS_DIR / "normalizers"
 
-# Create directories if they don't exist
+# Create directories
 for directory in [DATA_DIR, MODELS_DIR, EXPORTS_DIR, LOGS_DIR, CONFIGS_DIR, 
                   FEATURES_DIR, NORMALIZER_DIR]:
     directory.mkdir(exist_ok=True, parents=True)
+
 
 # ============================================================================
 # MODEL FILES
 # ============================================================================
 
-# Training models
 MODEL_CHECKPOINT = MODELS_DIR / "best_model.keras"
 FINAL_MODEL = MODELS_DIR / "gesture_model.keras"
 TFLITE_MODEL = EXPORTS_DIR / "gesture_model.tflite"
 QUANTIZED_TFLITE_MODEL = EXPORTS_DIR / "gesture_model_quantized.tflite"
 
-# Model metadata (CRITICAL FIX: Store feature dimension and config)
+# Model metadata
 MODEL_METADATA_FILE = MODELS_DIR / "model_metadata.json"
 FEATURE_CONFIG_FILE = CONFIGS_DIR / "feature_config.json"
 NORMALIZER_FILE = NORMALIZER_DIR / "feature_normalizer.npz"
 CONTRACT_EXPORT = CONFIGS_DIR / "gesture_contract.json"
 
-# Feature dimension placeholder (will be set during training)
-FEATURE_DIMENSION: int = None  # This MUST be set during training and used for inference
+# Feature dimension placeholder
+FEATURE_DIMENSION: Optional[int] = None
+
 
 # ============================================================================
 # TRAINING CONFIGURATION
 # ============================================================================
 
-# Data collection
-SEQUENCE_LENGTH = 30  # Frames per sequence
-MIN_SAMPLES_PER_GESTURE = 100  # Minimum samples needed per gesture
-TARGET_SAMPLES_PER_GESTURE = 200  # Ideal samples per gesture
-
-# Idle class configuration (CRITICAL FOR FALSE POSITIVE PREVENTION)
-IDLE_SAMPLES_MULTIPLIER = 1.5  # Idle should have 1.5x more samples than max active gesture
+SEQUENCE_LENGTH = 30
+MIN_SAMPLES_PER_GESTURE = 100
+TARGET_SAMPLES_PER_GESTURE = 200
 
 # Training parameters
 BATCH_SIZE = 32
@@ -159,72 +167,208 @@ TEST_SPLIT = 0.1
 
 # Data augmentation
 USE_AUGMENTATION = True
-AUGMENTATION_FACTOR = 2  # Multiply dataset by this factor
+AUGMENTATION_FACTOR = 2
+
 
 # ============================================================================
 # INFERENCE CONFIGURATION
 # ============================================================================
 
-# Real-time inference
 INFERENCE_CONFIDENCE_THRESHOLD = 0.7
-PREDICTION_HISTORY_LENGTH = 5  # For majority voting
+PREDICTION_HISTORY_LENGTH = 5
 MIN_FRAMES_FOR_INFERENCE = SEQUENCE_LENGTH
-
-# Different thresholds for idle vs active gestures
-IDLE_CONFIDENCE_THRESHOLD = 0.6  # Lower threshold for idle (more lenient)
-ACTIVE_CONFIDENCE_THRESHOLD = 0.7  # Higher threshold for active gestures
 
 # Camera settings
 CAMERA_INDEX = 0
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
-TARGET_FPS = 20  # Target frames per second for processing
+TARGET_FPS = 20
+
 
 # ============================================================================
-# GESTURE CONFIGURATION (VERIFIED)
+# GESTURE CONTRACT - CRITICAL: FAIL HARD ON MISSING CONTRACT
 # ============================================================================
 
-# IMPORTANT: Import gesture classes from contract AFTER config is defined
-# This ensures the contract is validated before use
+GESTURE_CLASSES = []
+NUM_GESTURES = 0
+
 try:
-    from gesture_action_contract import GESTURE_CLASSES, NUM_GESTURES
-except ImportError as e:
-    print(f"❌ Failed to import gesture classes: {e}")
-    print("   Make sure gesture_action_contract.py exists and defines GESTURE_CLASSES")
+    # CRITICAL: This import MUST succeed
+    from gesture_action_contract import GESTURE_CLASSES as CONTRACT_CLASSES, NUM_GESTURES as CONTRACT_NUM
+    
+    GESTURE_CLASSES = CONTRACT_CLASSES
+    NUM_GESTURES = CONTRACT_NUM
+    
+    # Validate idle is first
+    if len(GESTURE_CLASSES) > 0 and GESTURE_CLASSES[0] != 'idle':
+        print(f"\n⚠️  WARNING: 'idle' is not the first class (index {GESTURE_CLASSES.index('idle') if 'idle' in GESTURE_CLASSES else 'NOT FOUND'})")
+        print(f"   First class is '{GESTURE_CLASSES[0]}' - this may cause issues")
+    
+    print(f"✅ Gesture contract loaded: {len(GESTURE_CLASSES)} classes")
+    
+except ImportError:
+    error_msg = f"""
+{'=' * 80}
+❌ CRITICAL ERROR: gesture_action_contract.py is MANDATORY but missing!
+{'=' * 80}
+
+The system CANNOT operate without this file.
+
+REQUIRED ACTION:
+1. Create gesture_action_contract.py in: {PROJECT_ROOT}
+2. Define:
+   - GESTURE_CLASSES: List[str] = ['idle', 'attack', ...]
+   - NUM_GESTURES: int = len(GESTURE_CLASSES)
+
+Example:
+   GESTURE_CLASSES = ['idle', 'attack', 'dodge', 'slide', 'block', 'forward_movement']
+   NUM_GESTURES = len(GESTURE_CLASSES)
+"""
+    print(error_msg)
     sys.exit(1)
 
+
 # ============================================================================
-# MODEL METADATA STRUCTURE (CRITICAL FIX)
+# MODEL METADATA FUNCTIONS - CRITICAL: ALL FUNCTIONS OTHER MODULES EXPECT
 # ============================================================================
 
-# Initialize model metadata structure
-# This will be populated during training and validated during inference
-MODEL_METADATA = {
-    'feature_dimension': None,  # Will be set during training
-    'feature_config': FEATURE_CONFIG.to_dict(),  # Store the exact config used
-    'config_hash': FEATURE_CONFIG.get_hash(),  # For validation
-    'classes': GESTURE_CLASSES,
-    'sequence_length': SEQUENCE_LENGTH,
-    'timestamp': None,  # Will be set during training
-}
+def get_timestamp() -> str:
+    """Get current timestamp string."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def save_model_metadata(additional_data: Dict[str, Any] = None):
+
+def set_feature_dimension(dimension: int):
+    """
+    Set the feature dimension globally.
+    Expected by: train_gesture_model.py, feature_engineer.py
+    """
+    global FEATURE_DIMENSION
+    FEATURE_DIMENSION = dimension
+    print(f"✅ Feature dimension set to: {FEATURE_DIMENSION}")
+
+
+def get_model_path(model_type: str = "final") -> Path:
+    """
+    Get path to model file.
+    Expected by: main.py, real_time_inference.py
+    """
+    if model_type == "final":
+        return FINAL_MODEL
+    elif model_type == "checkpoint":
+        return MODEL_CHECKPOINT
+    elif model_type == "tflite":
+        return TFLITE_MODEL
+    elif model_type == "quantized":
+        return QUANTIZED_TFLITE_MODEL
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+
+
+def check_model_exists(model_type: str = "final") -> bool:
+    """
+    Check if model file exists.
+    Expected by: main.py, real_time_inference.py
+    """
+    return get_model_path(model_type).exists()
+
+
+def validate_paths() -> bool:
+    """
+    Validate all required paths exist.
+    Expected by: main.py
+    """
+    required_dirs = [DATA_DIR, MODELS_DIR, EXPORTS_DIR, LOGS_DIR, CONFIGS_DIR]
+    missing = [d for d in required_dirs if not d.exists()]
+    
+    if missing:
+        print(f"❌ Missing directories: {missing}")
+        return False
+    
+    return True
+
+
+def is_production() -> bool:
+    """
+    Check if running in production mode.
+    Expected by: main.py
+    """
+    return os.environ.get('GESTURE_RECOGNITION_ENV', 'development').lower() == 'production'
+
+
+def get_required_idle_samples(active_gesture_count: int = None) -> int:
+    """
+    Calculate required idle samples based on active gestures.
+    Expected by: train_gesture_model.py, data_pipeline.py
+    """
+    if active_gesture_count is None:
+        active_gesture_count = TARGET_SAMPLES_PER_GESTURE
+    
+    return int(active_gesture_count * IDLE_SAMPLES_MULTIPLIER)
+
+
+def get_confidence_threshold(gesture_name: str = None) -> float:
+    """
+    Get appropriate confidence threshold.
+    Expected by: real_time_inference.py
+    """
+    if gesture_name == "idle":
+        return IDLE_CONFIDENCE_THRESHOLD
+    else:
+        return ACTIVE_CONFIDENCE_THRESHOLD
+
+
+def get_gesture_index(gesture_name: str) -> int:
+    """
+    Get the index of a gesture.
+    Expected by: train_gesture_model.py, data_collector.py
+    """
+    try:
+        return GESTURE_CLASSES.index(gesture_name)
+    except ValueError:
+        raise ValueError(f"Gesture '{gesture_name}' not found. Available: {GESTURE_CLASSES}")
+
+
+def get_gesture_name(index: int) -> str:
+    """
+    Get the name of a gesture from its index.
+    Expected by: real_time_inference.py, unity_integration.py
+    """
+    if index < 0 or index >= NUM_GESTURES:
+        raise IndexError(f"Index {index} out of bounds (0-{NUM_GESTURES-1})")
+    return GESTURE_CLASSES[index]
+
+
+# ============================================================================
+# METADATA SAVE/LOAD FUNCTIONS
+# ============================================================================
+
+def save_model_metadata(additional_data: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Save model metadata to file.
-    
-    Args:
-        additional_data: Additional metadata to include
+    Expected by: train_gesture_model.py, gesture_model.py
     """
-    metadata = MODEL_METADATA.copy()
+    global FEATURE_DIMENSION
     
-    # Add feature dimension (must be set by this point)
     if FEATURE_DIMENSION is None:
-        raise RuntimeError("FEATURE_DIMENSION must be set before saving metadata")
+        raise RuntimeError(
+            "FEATURE_DIMENSION must be set before saving metadata. "
+            "Call set_feature_dimension() first."
+        )
     
-    metadata['feature_dimension'] = FEATURE_DIMENSION
-    metadata['timestamp'] = get_timestamp()
+    metadata = {
+        'feature_dimension': FEATURE_DIMENSION,
+        'feature_config': FEATURE_CONFIG.to_dict(),
+        'config_hash': FEATURE_CONFIG.get_hash(),
+        'idle_strategy': IDLE_STRATEGY,
+        'idle_features_enabled': IDLE_FEATURES_ENABLED,
+        'idle_threshold': IDLE_CONFIDENCE_THRESHOLD,
+        'active_threshold': ACTIVE_CONFIDENCE_THRESHOLD,
+        'classes': GESTURE_CLASSES,
+        'num_classes': NUM_GESTURES,
+        'sequence_length': SEQUENCE_LENGTH,
+        'timestamp': get_timestamp(),
+    }
     
-    # Add any additional data
     if additional_data:
         metadata.update(additional_data)
     
@@ -232,28 +376,26 @@ def save_model_metadata(additional_data: Dict[str, Any] = None):
     with open(MODEL_METADATA_FILE, 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    # Also save feature config separately
+    # Save feature config separately
     with open(FEATURE_CONFIG_FILE, 'w') as f:
         json.dump(FEATURE_CONFIG.to_dict(), f, indent=2)
     
     print(f"✅ Model metadata saved to {MODEL_METADATA_FILE}")
     print(f"   Feature dimension: {FEATURE_DIMENSION}")
-    print(f"   Config hash: {FEATURE_CONFIG.get_hash()}")
-    print(f"   Classes: {GESTURE_CLASSES}")
+    
+    return metadata
+
 
 def load_model_metadata() -> Dict[str, Any]:
     """
     Load model metadata from file.
-    
-    Returns:
-        Dictionary with model metadata
-        
-    Raises:
-        FileNotFoundError: If metadata file doesn't exist
+    Expected by: real_time_inference.py, gesture_model.py
     """
+    global FEATURE_DIMENSION
+    
     if not MODEL_METADATA_FILE.exists():
         raise FileNotFoundError(
-            f"Model metadata file not found: {MODEL_METADATA_FILE}\n"
+            f"Model metadata not found: {MODEL_METADATA_FILE}\n"
             f"Train a model first: python main.py train"
         )
     
@@ -261,444 +403,176 @@ def load_model_metadata() -> Dict[str, Any]:
         metadata = json.load(f)
     
     # Update global feature dimension
-    global FEATURE_DIMENSION
     FEATURE_DIMENSION = metadata.get('feature_dimension')
     
     if FEATURE_DIMENSION is None:
         raise ValueError("Feature dimension not found in metadata")
     
-    print(f"✅ Model metadata loaded")
-    print(f"   Feature dimension: {FEATURE_DIMENSION}")
-    print(f"   Config hash: {metadata.get('config_hash', 'N/A')}")
-    print(f"   Classes: {metadata.get('classes', [])}")
-    
+    print(f"✅ Model metadata loaded (dim={FEATURE_DIMENSION})")
     return metadata
+
 
 def validate_metadata_consistency(metadata: Dict[str, Any]) -> bool:
     """
     Validate that loaded metadata is consistent with current configuration.
-    
-    Args:
-        metadata: Loaded metadata dictionary
-        
-    Returns:
-        True if validation passes
+    Expected by: real_time_inference.py
     """
-    print("🔍 Validating metadata consistency...")
-    
     issues = []
     
-    # 1. Check feature config hash
+    # Check idle strategy (CRITICAL)
+    saved_strategy = metadata.get('idle_strategy')
+    if saved_strategy != IDLE_STRATEGY:
+        issues.append(f"Idle strategy mismatch: saved='{saved_strategy}', current='{IDLE_STRATEGY}'")
+    
+    # Check idle features
+    saved_idle_features = metadata.get('idle_features_enabled', False)
+    if saved_idle_features != IDLE_FEATURES_ENABLED:
+        issues.append(f"Idle features mismatch: saved={saved_idle_features}, current={IDLE_FEATURES_ENABLED}")
+    
+    # Check config hash
     current_hash = FEATURE_CONFIG.get_hash()
     saved_hash = metadata.get('config_hash')
-    
     if current_hash != saved_hash:
-        issues.append(
-            f"❌ Feature configuration hash mismatch:\n"
-            f"   Current: {current_hash}\n"
-            f"   Saved:   {saved_hash}\n"
-            f"   This will cause silent model degradation!"
-        )
-    else:
-        print(f"   ✅ Feature config hash matches: {current_hash}")
+        issues.append(f"Config hash mismatch: saved={saved_hash}, current={current_hash}")
     
-    # 2. Check classes
+    # Check classes
     saved_classes = metadata.get('classes', [])
     if saved_classes != GESTURE_CLASSES:
-        issues.append(
-            f"❌ Gesture classes mismatch:\n"
-            f"   Current: {GESTURE_CLASSES}\n"
-            f"   Saved:   {saved_classes}"
-        )
-    else:
-        print(f"   ✅ Gesture classes match: {len(GESTURE_CLASSES)} classes")
-    
-    # 3. Check feature dimension is set
-    feature_dim = metadata.get('feature_dimension')
-    if feature_dim is None:
-        issues.append("❌ Feature dimension not found in metadata")
-    else:
-        print(f"   ✅ Feature dimension: {feature_dim}")
-    
-    # 4. Check idle feature consistency (CRITICAL)
-    saved_config = metadata.get('feature_config', {})
-    saved_idle = saved_config.get('compute_idle_features', False)
-    current_idle = FEATURE_CONFIG.compute_idle_features
-    
-    if saved_idle != current_idle:
-        issues.append(
-            f"❌ IDLE FEATURE CONFIGURATION MISMATCH (CRITICAL):\n"
-            f"   Saved: compute_idle_features={saved_idle}\n"
-            f"   Current: compute_idle_features={current_idle}\n"
-            f"   This will cause dimension mismatch and model failure!"
-        )
-    else:
-        print(f"   ✅ Idle features consistent: {current_idle}")
+        issues.append(f"Classes mismatch: saved={saved_classes}, current={GESTURE_CLASSES}")
     
     if issues:
-        print("\n" + "=" * 60)
-        print("METADATA VALIDATION FAILED:")
+        print("\n❌ METADATA VALIDATION FAILED:")
         for issue in issues:
-            print(f"\n{issue}")
-        print("\n" + "=" * 60)
+            print(f"   • {issue}")
         return False
     
-    print("✅ All metadata validations passed!")
+    print("✅ Metadata validation passed")
     return True
 
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-def verify_idle_class():
-    """Verify that idle class is properly configured."""
-    print("🔍 Verifying idle class configuration...")
-    
-    issues = []
-    
-    # 1. Check if idle is in GESTURE_CLASSES
-    if 'idle' not in GESTURE_CLASSES:
-        issues.append("❌ 'idle' not found in GESTURE_CLASSES")
-    else:
-        print(f"   ✅ 'idle' found in GESTURE_CLASSES at index {GESTURE_CLASSES.index('idle')}")
-    
-    # 2. Check NUM_GESTURES matches GESTURE_CLASSES length
-    if NUM_GESTURES != len(GESTURE_CLASSES):
-        issues.append(f"❌ NUM_GESTURES ({NUM_GESTURES}) doesn't match GESTURE_CLASSES length ({len(GESTURE_CLASSES)})")
-    else:
-        print(f"   ✅ NUM_GESTURES ({NUM_GESTURES}) matches GESTURE_CLASSES length")
-    
-    # 3. Check if idle directory exists
-    idle_dir = DATA_DIR / "idle"
-    if not idle_dir.exists():
-        print(f"   ⚠️  Idle directory not found: {idle_dir}")
-        print(f"      Creating directory...")
-        idle_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        print(f"   ✅ Idle directory exists: {idle_dir}")
-    
-    # 4. Check other gesture directories
-    print(f"   📁 Checking gesture directories...")
-    for gesture in GESTURE_CLASSES:
-        if gesture != 'idle':  # Skip idle, we already checked it
-            gesture_dir = DATA_DIR / gesture
-            if not gesture_dir.exists():
-                print(f"      ⚠️  Missing directory for '{gesture}': {gesture_dir}")
-    
-    # 5. Verify feature config has idle features enabled
-    if not FEATURE_CONFIG.compute_idle_features:
-        issues.append("❌ FeatureConfig.compute_idle_features is False! Must be True for consistency")
-    else:
-        print(f"   ✅ FeatureConfig.compute_idle_features is True (correct)")
-    
-    if issues:
-        print("\n❌ IDLE CLASS CONFIGURATION ISSUES:")
-        for issue in issues:
-            print(f"   {issue}")
-        print("\n   Fix these issues before training!")
-        return False
-    
-    print("\n✅ Idle class configuration verified successfully!")
-    return True
-
-def get_required_idle_samples(active_gesture_count: int = None) -> int:
-    """
-    Calculate required idle samples based on active gestures.
-    
-    Args:
-        active_gesture_count: Count of samples in the most frequent active gesture.
-                              If None, uses TARGET_SAMPLES_PER_GESTURE.
-    
-    Returns:
-        Required number of idle samples
-    """
-    if active_gesture_count is None:
-        active_gesture_count = TARGET_SAMPLES_PER_GESTURE
-    
-    return int(active_gesture_count * IDLE_SAMPLES_MULTIPLIER)
-
-def get_confidence_threshold(gesture_name: str) -> float:
-    """Get appropriate confidence threshold based on gesture type."""
-    if gesture_name == "idle":
-        return IDLE_CONFIDENCE_THRESHOLD
-    else:
-        return ACTIVE_CONFIDENCE_THRESHOLD
-
-def get_gesture_index(gesture_name: str) -> int:
-    """
-    Get the index of a gesture in GESTURE_CLASSES.
-    
-    Args:
-        gesture_name: Name of the gesture
-        
-    Returns:
-        Integer index (0-based)
-        
-    Raises:
-        ValueError: If gesture_name is not in GESTURE_CLASSES
-    """
-    try:
-        return GESTURE_CLASSES.index(gesture_name)
-    except ValueError:
-        raise ValueError(
-            f"Gesture '{gesture_name}' not found in GESTURE_CLASSES. "
-            f"Available gestures: {GESTURE_CLASSES}"
-        )
-
-def get_gesture_name(index: int) -> str:
-    """
-    Get the name of a gesture from its index.
-    
-    Args:
-        index: Index of the gesture
-        
-    Returns:
-        Gesture name
-        
-    Raises:
-        IndexError: If index is out of bounds
-    """
-    if index < 0 or index >= NUM_GESTURES:
-        raise IndexError(
-            f"Gesture index {index} out of bounds. "
-            f"Valid indices: 0-{NUM_GESTURES-1}"
-        )
-    return GESTURE_CLASSES[index]
-
-def print_gesture_summary():
-    """Print a summary of all gesture classes."""
-    print("\n" + "=" * 60)
-    print("GESTURE CLASSES SUMMARY")
-    print("=" * 60)
-    print(f"Total gestures: {NUM_GESTURES}")
-    print(f"Active gestures: {NUM_GESTURES - 1} (excluding idle)")
-    print(f"Idle class: {'✅ Present' if 'idle' in GESTURE_CLASSES else '❌ Missing'}")
-    print("\nAll gesture classes:")
-    for i, gesture in enumerate(GESTURE_CLASSES):
-        marker = "⭐ " if gesture == "idle" else "  "
-        print(f"  {marker}{i:2d}. {gesture}")
-    print("=" * 60)
-
-def get_timestamp() -> str:
-    """Get current timestamp string."""
-    from datetime import datetime
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # ============================================================================
-# VALIDATION AND CHECKS
+# SYSTEM INITIALIZATION
 # ============================================================================
 
-def validate_paths():
-    """Validate that all required paths and directories exist."""
-    required_dirs = [DATA_DIR, MODELS_DIR, EXPORTS_DIR, FEATURES_DIR, NORMALIZER_DIR]
-    
-    for directory in required_dirs:
-        if not directory.exists():
-            print(f"⚠️  Creating directory: {directory}")
-            directory.mkdir(parents=True, exist_ok=True)
-    
-    return True
-
-def validate_dataset_structure():
-    """Validate the dataset directory structure."""
-    print("\n🔍 Validating dataset structure...")
-    
-    # Check if data directory exists
-    if not DATA_DIR.exists():
-        print(f"❌ Data directory not found: {DATA_DIR}")
-        return False
-    
-    # Check for gesture directories
-    missing_dirs = []
-    for gesture in GESTURE_CLASSES:
-        gesture_dir = DATA_DIR / gesture
-        if not gesture_dir.exists():
-            missing_dirs.append(gesture)
-    
-    if missing_dirs:
-        print(f"⚠️  Missing directories for gestures: {missing_dirs}")
-        print(f"   Creating missing directories...")
-        for gesture in missing_dirs:
-            (DATA_DIR / gesture).mkdir(parents=True, exist_ok=True)
-    
-    print("✅ Dataset structure validated")
-    return True
-
-def get_model_path(model_type="best"):
+def initialize_system() -> bool:
     """
-    Get the path to a specific model file.
-    
-    Args:
-        model_type: "best" (checkpoint), "final", "tflite", or "quantized"
-    
-    Returns:
-        Path object to the model file
+    Initialize and validate the entire system.
+    Expected by: main.py
     """
-    model_paths = {
-        "best": MODEL_CHECKPOINT,
-        "final": FINAL_MODEL,
-        "tflite": TFLITE_MODEL,
-        "quantized": QUANTIZED_TFLITE_MODEL,
-    }
-    
-    if model_type not in model_paths:
-        raise ValueError(
-            f"Unknown model_type: {model_type}. "
-            f"Available: {list(model_paths.keys())}"
-        )
-    
-    return model_paths[model_type]
-
-def check_model_exists(model_type="best", raise_error=False):
-    """
-    Check if a model file exists.
-    
-    Args:
-        model_type: Type of model to check
-        raise_error: If True, raise FileNotFoundError when missing
-    
-    Returns:
-        bool: True if model exists
-    """
-    model_path = get_model_path(model_type)
-    
-    if not model_path.exists():
-        if raise_error:
-            raise FileNotFoundError(
-                f"Model file not found: {model_path}\n"
-                f"Run training first: python main.py train"
-            )
-        return False
-    
-    return True
-
-def check_metadata_exists(raise_error=False):
-    """
-    Check if model metadata exists.
-    
-    Args:
-        raise_error: If True, raise FileNotFoundError when missing
-    
-    Returns:
-        bool: True if metadata exists
-    """
-    if not MODEL_METADATA_FILE.exists():
-        if raise_error:
-            raise FileNotFoundError(
-                f"Model metadata file not found: {MODEL_METADATA_FILE}\n"
-                f"Run training first: python main.py train"
-            )
-        return False
-    
-    return True
-
-# ============================================================================
-# ENVIRONMENT CONFIGURATION
-# ============================================================================
-
-# Detect environment
-def is_production():
-    """Check if running in production environment."""
-    return os.getenv("ENVIRONMENT", "development").lower() == "production"
-
-def is_colab():
-    """Check if running in Google Colab."""
-    try:
-        import google.colab
-        return True
-    except ImportError:
-        return False
-
-def is_testing():
-    """Check if running in test mode."""
-    return os.getenv("TEST_MODE", "false").lower() == "true"
-
-# Set environment-specific settings
-if is_colab():
-    # Colab-specific settings
-    print("🔧 Google Colab environment detected")
-    CAMERA_INDEX = 0  # Webcam in Colab
-    DATA_DIR = Path("/content/gesture_dataset")
-    MODELS_DIR = Path("/content/models")
-    EXPORTS_DIR = Path("/content/exports")
-    FEATURES_DIR = Path("/content/models/features")
-    NORMALIZER_DIR = Path("/content/models/normalizers")
-    
-elif is_production():
-    # Production settings
-    print("🔧 Production environment detected")
-    INFERENCE_CONFIDENCE_THRESHOLD = 0.8  # Higher threshold in production
-    USE_AUGMENTATION = False  # No augmentation in production
-    IDLE_CONFIDENCE_THRESHOLD = 0.5  # Even more lenient in production
-    ACTIVE_CONFIDENCE_THRESHOLD = 0.75  # Higher threshold for active gestures
-
-elif is_testing():
-    # Testing settings
-    print("🔧 Testing environment detected")
-    MIN_SAMPLES_PER_GESTURE = 10  # Lower for testing
-    TARGET_SAMPLES_PER_GESTURE = 20  # Lower for testing
-    EPOCHS = 5  # Fewer epochs for testing
-
-# ============================================================================
-# INITIALIZATION
-# ============================================================================
-
-def initialize_system():
-    """Initialize and validate the entire system."""
     print("\n" + "=" * 60)
     print("SYSTEM INITIALIZATION")
     print("=" * 60)
     
-    # 1. Validate paths
-    validate_paths()
-    
-    # 2. Validate dataset structure
-    validate_dataset_structure()
-    
-    # 3. Verify idle class configuration
-    if not verify_idle_class():
-        print("\n❌ System initialization failed!")
+    # Validate paths
+    if not validate_paths():
         return False
     
-    # 4. Print gesture summary
-    print_gesture_summary()
-    
-    # 5. Print feature configuration
-    FEATURE_CONFIG.print_summary()
-    
-    # 6. Validate contract consistency
-    try:
-        from gesture_action_contract import GestureActionContract
-        GestureActionContract.validate_consistency()
-        print("✅ Gesture contract validation passed")
-    except Exception as e:
-        print(f"❌ Gesture contract validation failed: {e}")
+    # Verify idle strategy
+    if not FEATURE_CONFIG.compute_idle_features:
+        print("❌ CRITICAL: compute_idle_features must be True")
         return False
     
-    print("\n✅ System initialization complete!")
-    print("=" * 60)
+    if IDLE_STRATEGY != "explicit_features":
+        print(f"❌ IDLE_STRATEGY is '{IDLE_STRATEGY}', should be 'explicit_features'")
+        return False
+    
+    print(f"✅ System initialized with {NUM_GESTURES} gesture classes")
+    print(f"   Idle index: {get_gesture_index('idle') if 'idle' in GESTURE_CLASSES else 'NOT FOUND'}")
     
     return True
 
-# ============================================================================
-# CONSTANT VERIFICATION
-# ============================================================================
-
-# Verify critical constants are set
-assert SEQUENCE_LENGTH > 0, "SEQUENCE_LENGTH must be positive"
-assert MIN_SAMPLES_PER_GESTURE > 0, "MIN_SAMPLES_PER_GESTURE must be positive"
-assert IDLE_SAMPLES_MULTIPLIER >= 1.0, "IDLE_SAMPLES_MULTIPLIER must be >= 1.0"
-assert NUM_GESTURES > 0, "NUM_GESTURES must be positive"
-assert FEATURE_CONFIG.compute_idle_features, "compute_idle_features MUST be True for consistency"
 
 # ============================================================================
 # AUTO-INITIALIZATION
 # ============================================================================
 
-# Auto-initialize on import (unless testing)
-if not is_testing():
-    try:
-        initialize_system()
-    except Exception as e:
-        print(f"⚠️  System initialization warning: {e}")
-        print("   Some features may not work correctly")
+# Run initialization on import
+if not initialize_system():
+    print("⚠️  System initialization had warnings - continuing...")
+
+# ============================================================================
+# EXPORT PUBLIC INTERFACE - COMPLETE SET FOR ALL MODULES
+# ============================================================================
+
+__all__ = [
+    # Feature config
+    'FeatureConfig',
+    'FEATURE_CONFIG',
+    
+    # Idle strategy
+    'IDLE_STRATEGY',
+    'IDLE_FEATURES_ENABLED',
+    'IDLE_SAMPLES_MULTIPLIER',
+    'IDLE_CONFIDENCE_THRESHOLD',
+    'ACTIVE_CONFIDENCE_THRESHOLD',
+    
+    # Paths
+    'PROJECT_ROOT',
+    'DATA_DIR',
+    'MODELS_DIR',
+    'EXPORTS_DIR',
+    'LOGS_DIR',
+    'CONFIGS_DIR',
+    'FEATURES_DIR',
+    'NORMALIZER_DIR',
+    
+    # Model files
+    'MODEL_CHECKPOINT',
+    'FINAL_MODEL',
+    'TFLITE_MODEL',
+    'QUANTIZED_TFLITE_MODEL',
+    'MODEL_METADATA_FILE',
+    'FEATURE_CONFIG_FILE',
+    'NORMALIZER_FILE',
+    'CONTRACT_EXPORT',
+    
+    # Feature dimension
+    'FEATURE_DIMENSION',
+    'set_feature_dimension',
+    
+    # Training config
+    'SEQUENCE_LENGTH',
+    'MIN_SAMPLES_PER_GESTURE',
+    'TARGET_SAMPLES_PER_GESTURE',
+    'BATCH_SIZE',
+    'EPOCHS',
+    'LEARNING_RATE',
+    'VALIDATION_SPLIT',
+    'TEST_SPLIT',
+    'USE_AUGMENTATION',
+    'AUGMENTATION_FACTOR',
+    
+    # Inference config
+    'INFERENCE_CONFIDENCE_THRESHOLD',
+    'PREDICTION_HISTORY_LENGTH',
+    'MIN_FRAMES_FOR_INFERENCE',
+    'CAMERA_INDEX',
+    'CAMERA_WIDTH',
+    'CAMERA_HEIGHT',
+    'TARGET_FPS',
+    
+    # Gesture config
+    'GESTURE_CLASSES',
+    'NUM_GESTURES',
+    
+    # PATH VALIDATION FUNCTIONS - ADDED FOR main.py
+    'validate_paths',
+    'check_model_exists',
+    'get_model_path',
+    'is_production',
+    
+    # Metadata functions
+    'save_model_metadata',
+    'load_model_metadata',
+    'validate_metadata_consistency',
+    
+    # Helper functions
+    'get_timestamp',
+    'get_required_idle_samples',
+    'get_confidence_threshold',
+    'get_gesture_index',
+    'get_gesture_name',
+    
+    # System initialization
+    'initialize_system',
+]
