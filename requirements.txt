@@ -46,9 +46,8 @@ memory_profiler>=0.60.0
 scipy>=1.9.0
 
 
-# Platform-specific dependencies (optional)
-# For GPU support on Windows/Linux:
-tensorflow-gpu>=2.10.0
+
+
 
 # For Apple Silicon (M1/M2):
 # tensorflow-macos>=2.10.0

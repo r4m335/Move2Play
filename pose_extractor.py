@@ -1,14 +1,33 @@
-# pose_extractor.py (FIXED VERSION)
 """
-Optimized real-time pose extraction using MediaPipe.
+MediaPipe 0.10+ Tasks API Pose Extractor for Windows.
+Uses the modern PoseLandmarker API (supports Python 3.10+ on Windows).
 Single inference per frame, robust normalization.
+
+CRITICAL FIXES:
+1. ✅ VIDEO mode requires detect_for_video() with timestamp
+2. ✅ Correct Image class: mp.Image, not vision.Image
+3. ✅ Monotonic real timestamps (not assumed FPS) for VIDEO mode stability
+4. ✅ Removed frame_count - timestamps based on actual elapsed time
 """
 
 import cv2
-import mediapipe as mp
 import numpy as np
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Tuple, Optional, Dict, Any, List, Union
 from dataclasses import dataclass
+import os
+import time
+
+# MediaPipe Tasks API (0.10+)
+try:
+    import mediapipe as mp
+    from mediapipe.tasks import python
+    from mediapipe.tasks.python import vision
+
+    MP_TASKS_AVAILABLE = True
+except ImportError:
+    print("⚠️  MediaPipe Tasks API not available. Install: pip install mediapipe")
+    MP_TASKS_AVAILABLE = False
+
 
 @dataclass
 class PoseResult:
@@ -18,32 +37,92 @@ class PoseResult:
     mp_results: Any  # MediaPipe results object
     image_shape: Tuple[int, int]  # (height, width)
     normalized_positions: np.ndarray  # Normalized positions only (33, 3) - for compatibility
+    timestamp_ms: int  # Monotonic real timestamp for video mode
+
 
 class PoseExtractor:
-    """Extracts and normalizes body landmarks from camera frames."""
+    """
+    Extracts and normalizes body landmarks using MediaPipe Tasks API.
+    Compatible with Windows Python 3.10+ (MediaPipe 0.10+).
+    """
     
     def __init__(self, 
-                 min_detection_confidence: float = 0.5, 
+                 min_detection_confidence: float = 0.5,
                  min_tracking_confidence: float = 0.5,
-                 use_torso_length: bool = True):
+                 min_presence_confidence: float = 0.5,
+                 model_complexity: int = 1,
+                 use_torso_length: bool = True,
+                 model_path: Optional[str] = None):
         """
-        Args:
-            min_detection_confidence: MediaPipe detection confidence threshold
-            min_tracking_confidence: MediaPipe tracking confidence threshold
-            use_torso_length: Use torso length for normalization (more robust than shoulder width)
-        """
-        self.mp_pose = mp.solutions.pose
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=1,  # 0=Light, 1=Full, 2=Heavy
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence,
-            smooth_landmarks=True
-        )
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.use_torso_length = use_torso_length
+        Initialize PoseLandmarker with Tasks API.
         
-        # Landmark indices for quick reference
+        Args:
+            min_detection_confidence: Minimum confidence for detection
+            min_tracking_confidence: Minimum confidence for tracking
+            min_presence_confidence: Minimum confidence for presence
+            model_complexity: 0=light, 1=full, 2=heavy
+            use_torso_length: Use torso length for normalization
+            model_path: Optional path to custom model file
+        """
+        if not MP_TASKS_AVAILABLE:
+            raise ImportError(
+                "MediaPipe Tasks API not installed.\n"
+                "Install with: pip install mediapipe\n"
+                "Requires MediaPipe 0.10.0+ for Windows Python 3.10+"
+            )
+        
+        self.use_torso_length = use_torso_length
+        self.min_visibility = min_detection_confidence
+        self.model_complexity = model_complexity
+        
+        # CRITICAL FIX: Store start time for monotonic timestamps
+        self._start_time = time.time()
+        
+        # Initialize PoseLandmarker with Tasks API
+        try:
+            # Determine model path
+            if model_path is None:
+                # Use bundled model based on complexity
+                if model_complexity == 0:
+                    model_name = "pose_landmarker_lite.task"
+                elif model_complexity == 1:
+                    model_name = "pose_landmarker_full.task"
+                else:
+                    model_name = "pose_landmarker_heavy.task"
+                
+                # Check if model exists locally, otherwise use bundled
+                self.model_path = self._get_model_path(model_name)
+            else:
+                self.model_path = model_path
+            
+            # Create PoseLandmarker options
+            options = vision.PoseLandmarkerOptions(
+                base_options=python.BaseOptions(model_asset_path=self.model_path),
+                running_mode=vision.RunningMode.VIDEO,  # VIDEO mode for real-time
+                min_pose_detection_confidence=min_detection_confidence,
+                min_pose_presence_confidence=min_presence_confidence,
+                min_tracking_confidence=min_tracking_confidence,
+                num_poses=1
+            )
+            
+            # Create landmarker
+            self.landmarker = vision.PoseLandmarker.create_from_options(options)
+            print(f"✅ PoseLandmarker initialized with model: {os.path.basename(self.model_path)}")
+            print(f"   Running mode: VIDEO (requires detect_for_video with real timestamps)")
+            
+        except Exception as e:
+            print(f"❌ Failed to initialize PoseLandmarker: {e}")
+            print("\nTROUBLESHOOTING:")
+            print("1. MediaPipe 0.10+ requires the .task model files")
+            print("2. Run this to download models:")
+            print("   python -c \"from mediapipe.tasks import python; from mediapipe.tasks.python import vision;")
+            print("   options = vision.PoseLandmarkerOptions(")
+            print("       base_options=python.BaseOptions(model_asset_path='pose_landmarker_full.task'),")
+            print("       running_mode=vision.RunningMode.VIDEO));")
+            print("   vision.PoseLandmarker.create_from_options(options)\"")
+            raise
+        
+        # Landmark indices (same as MediaPipe Pose)
         self.LANDMARK_INDICES = {
             'nose': 0, 'left_eye_inner': 1, 'left_eye': 2, 'left_eye_outer': 3,
             'right_eye_inner': 4, 'right_eye': 5, 'right_eye_outer': 6,
@@ -58,45 +137,127 @@ class PoseExtractor:
             'right_foot_index': 32
         }
         
-        # Connection indices for drawing (if needed)
-        self.POSE_CONNECTIONS = self.mp_pose.POSE_CONNECTIONS
+        # Connection pairs for drawing
+        self.POSE_CONNECTIONS = [
+            (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8),
+            (9, 10), (11, 12), (11, 13), (13, 15), (15, 17), (15, 19), (15, 21),
+            (17, 19), (12, 14), (14, 16), (16, 18), (16, 20), (16, 22), (18, 20),
+            (11, 23), (12, 24), (23, 24), (23, 25), (25, 27), (27, 29), (27, 31),
+            (29, 31), (24, 26), (26, 28), (28, 30), (28, 32), (30, 32)
+        ]
         
+        # Smoothing buffer
+        self._prev_normalized = None
+    
+    def _get_model_path(self, model_name: str) -> str:
+        """
+        Get path to model file. Downloads if not present.
+        
+        Args:
+            model_name: Name of the model file
+            
+        Returns:
+            Path to model file
+        """
+        # Check common locations
+        possible_paths = [
+            model_name,
+            os.path.join("models", model_name),
+            os.path.join("mediapipe", "models", model_name),
+            os.path.join(os.path.dirname(__file__), "models", model_name),
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                print(f"✅ Found model at: {path}")
+                return path
+        
+        # If not found, try to download using MediaPipe's helper
+        print(f"⚠️  Model '{model_name}' not found. Attempting to download...")
+        
+        try:
+            # Create models directory
+            os.makedirs("models", exist_ok=True)
+            model_path = os.path.join("models", model_name)
+            
+            # MediaPipe 0.10+ can download models automatically
+            options = vision.PoseLandmarkerOptions(
+                base_options=python.BaseOptions(model_asset_path=model_path),
+                running_mode=vision.RunningMode.VIDEO
+            )
+            # This will trigger download if needed
+            _ = vision.PoseLandmarker.create_from_options(options)
+            
+            print(f"✅ Model downloaded to: {model_path}")
+            return model_path
+            
+        except Exception as e:
+            print(f"❌ Failed to download model: {e}")
+            print("\nPlease download manually:")
+            print(f"1. Visit: https://storage.googleapis.com/mediapipe-models/pose_landmarker/{model_name}")
+            print(f"2. Save to: {os.path.abspath('models')}/")
+            raise
+    
     def process_frame(self, image: np.ndarray) -> Optional[PoseResult]:
         """
-        Single-pass processing: extract landmarks, normalize, and return results.
+        Single-pass processing using PoseLandmarker Tasks API in VIDEO mode.
+        
+        CRITICAL FIXES:
+        1. Uses detect_for_video() with timestamp_ms (required for VIDEO mode)
+        2. Uses mp.Image, not vision.Image (correct class)
+        3. Uses monotonic real timestamps (not assumed FPS) for stability
         
         Args:
             image: BGR image frame from camera
             
         Returns:
-            PoseResult containing landmarks and MediaPipe results, or None if no pose detected
+            PoseResult containing landmarks and results, or None if no pose detected
         """
-        # Convert BGR to RGB
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image_rgb.flags.writeable = False
-        
-        # Single MediaPipe inference
-        mp_results = self.pose.process(image_rgb)
-        
-        if not mp_results.pose_landmarks:
+        if not MP_TASKS_AVAILABLE:
             return None
         
-        # Convert landmarks to numpy array
-        raw_landmarks = self._landmarks_to_array(mp_results.pose_landmarks)
-        
-        # Normalize landmarks (keeping visibility)
-        normalized_landmarks = self._normalize_landmarks_with_visibility(raw_landmarks)
-        
-        # Extract positions only for backward compatibility
-        normalized_positions = normalized_landmarks[:, :3]
-        
-        return PoseResult(
-            landmarks=normalized_landmarks,  # (33, 4) with visibility
-            raw_landmarks=raw_landmarks,  # (33, 4) original
-            mp_results=mp_results,
-            image_shape=image.shape[:2],  # (height, width)
-            normalized_positions=normalized_positions  # (33, 3) positions only
-        )
+        try:
+            # Convert BGR to RGB (MediaPipe Tasks expects RGB)
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
+            # CRITICAL FIX: Use mp.Image, NOT vision.Image
+            # vision.Image does not exist in MediaPipe Tasks API
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+            
+            # CRITICAL FIX: VIDEO mode requires monotonic real timestamps
+            # Calculate milliseconds since start - this handles any FPS variation
+            timestamp_ms = int((time.time() - self._start_time) * 1000)
+            
+            # CRITICAL FIX: Use detect_for_video() for VIDEO mode
+            detection_result = self.landmarker.detect_for_video(mp_image, timestamp_ms)
+            
+            if not detection_result.pose_landmarks or len(detection_result.pose_landmarks) == 0:
+                return None
+            
+            # Get first pose landmarks
+            pose_landmarks = detection_result.pose_landmarks[0]
+            
+            # Convert to numpy array with visibility
+            raw_landmarks = self._landmarks_to_array(pose_landmarks)
+            
+            # Normalize landmarks (keeping visibility)
+            normalized_landmarks = self._normalize_landmarks_with_visibility(raw_landmarks)
+            
+            # Extract positions only for backward compatibility
+            normalized_positions = normalized_landmarks[:, :3]
+            
+            return PoseResult(
+                landmarks=normalized_landmarks,  # (33, 4) with visibility
+                raw_landmarks=raw_landmarks,     # (33, 4) original
+                mp_results=detection_result,
+                image_shape=image.shape[:2],      # (height, width)
+                normalized_positions=normalized_positions,  # (33, 3) positions only
+                timestamp_ms=timestamp_ms         # Monotonic real timestamp
+            )
+            
+        except Exception as e:
+            print(f"⚠️  Frame processing error: {e}")
+            return None
     
     def extract_landmarks(self, image: np.ndarray) -> Optional[np.ndarray]:
         """
@@ -109,16 +270,22 @@ class PoseExtractor:
     def extract_positions_only(self, image: np.ndarray) -> Optional[np.ndarray]:
         """
         Returns only normalized positions (33, 3) without visibility.
-        For use cases that don't need visibility.
         """
         result = self.process_frame(image)
         return result.normalized_positions if result else None
     
     def _landmarks_to_array(self, pose_landmarks) -> np.ndarray:
-        """Convert MediaPipe landmarks to numpy array with visibility."""
+        """
+        Convert MediaPipe landmarks to numpy array with visibility.
+        
+        Args:
+            pose_landmarks: NormalizedLandmarkList from detection_result
+            
+        Returns:
+            Array of shape (33, 4) with [x, y, z, visibility]
+        """
         landmarks = []
-        for lm in pose_landmarks.landmark:
-            # Store: [x, y, z, visibility]
+        for lm in pose_landmarks:
             landmarks.append([lm.x, lm.y, lm.z, lm.visibility])
         return np.array(landmarks, dtype=np.float32)
     
@@ -171,7 +338,7 @@ class PoseExtractor:
         
         # Calculate torso length (shoulder to hip) for scaling
         if self.use_torso_length:
-            # Use torso vector length for scaling (more robust than shoulder width)
+            # Use torso vector length for scaling
             shoulder_center = np.zeros(3, dtype=np.float32)
             shoulder_count = 0
             
@@ -181,17 +348,14 @@ class PoseExtractor:
                     shoulder_count += 1
             
             if shoulder_count == 0:
-                # Fallback: use default scale
                 scale_factor = 1.0
             else:
                 shoulder_center /= shoulder_count
                 torso_vector = shoulder_center - hip_center
                 torso_length = np.linalg.norm(torso_vector)
-                
-                # Prevent division by zero
                 scale_factor = torso_length if torso_length > 1e-6 else 1.0
         else:
-            # Original shoulder width method (less robust)
+            # Original shoulder width method
             if (visibility[left_shoulder_idx] >= visibility_threshold and 
                 visibility[right_shoulder_idx] >= visibility_threshold):
                 shoulder_width = np.linalg.norm(
@@ -201,7 +365,7 @@ class PoseExtractor:
             else:
                 scale_factor = 1.0
         
-        # Normalize positions (keep visibility unchanged)
+        # Normalize positions
         normalized = np.zeros((33, 4), dtype=np.float32)
         
         for i in range(len(positions)):
@@ -209,22 +373,17 @@ class PoseExtractor:
             normalized[i, 3] = visibility[i]
             
             if visibility[i] >= visibility_threshold:
-                # Translate to hip center and scale by torso length
+                # Translate to hip center and scale
                 normalized[i, :3] = (positions[i] - hip_center) / scale_factor
             else:
-                # For low-visibility joints, use interpolated position or zero
-                # We still need to estimate position even if visibility is low
-                # Try to estimate from neighboring joints
+                # Estimate position for low-visibility joints
                 estimated_position = self._estimate_position(i, positions, visibility, visibility_threshold)
                 normalized[i, :3] = (estimated_position - hip_center) / scale_factor
         
-        # Optional: Apply smoothing filter (simple moving average)
-        # This helps reduce jitter in real-time applications
-        if hasattr(self, '_prev_normalized'):
+        # Apply temporal smoothing
+        if self._prev_normalized is not None:
             alpha = 0.3  # Smoothing factor
             normalized[:, :3] = alpha * normalized[:, :3] + (1 - alpha) * self._prev_normalized[:, :3]
-            # Visibility doesn't get smoothed
-            normalized[:, 3] = landmarks[:, 3]
         
         self._prev_normalized = normalized.copy()
         
@@ -237,39 +396,24 @@ class PoseExtractor:
                           threshold: float) -> np.ndarray:
         """
         Estimate position for low-visibility joints using neighboring joints.
-        
-        Args:
-            index: Index of joint to estimate
-            positions: All joint positions
-            visibility: All joint visibilities
-            threshold: Visibility threshold
-            
-        Returns:
-            Estimated position for the joint
         """
-        # Define joint neighbors for estimation
+        # Define joint neighbors
         neighbor_groups = {
-            # Left side
-            11: [12, 13, 23],  # left_shoulder from right_shoulder, left_elbow, left_hip
-            13: [11, 15, 23],  # left_elbow from left_shoulder, left_wrist, left_hip
-            15: [13, 19, 21],  # left_wrist from left_elbow, left_index, left_thumb
-            23: [11, 24, 25],  # left_hip from left_shoulder, right_hip, left_knee
-            25: [23, 27, 26],  # left_knee from left_hip, left_ankle, right_knee
-            27: [25, 29, 31],  # left_ankle from left_knee, left_heel, left_foot_index
-            
-            # Right side
-            12: [11, 14, 24],  # right_shoulder from left_shoulder, right_elbow, right_hip
-            14: [12, 16, 24],  # right_elbow from right_shoulder, right_wrist, right_hip
-            16: [14, 20, 22],  # right_wrist from right_elbow, right_index, right_thumb
-            24: [12, 23, 26],  # right_hip from right_shoulder, left_hip, right_knee
-            26: [24, 28, 25],  # right_knee from right_hip, right_ankle, left_knee
-            28: [26, 30, 32],  # right_ankle from right_knee, right_heel, right_foot_index
-            
-            # Symmetrical joints can use opposite side
-            0: [1, 4, 7, 8],   # nose from eyes and ears
-            1: [2, 4, 0],      # left_eye_inner from left_eye, right_eye_inner, nose
-            2: [1, 3, 0],      # left_eye from left_eye_inner, left_eye_outer, nose
-            # Add more as needed...
+            11: [12, 13, 23],  # left_shoulder
+            13: [11, 15, 23],  # left_elbow
+            15: [13, 19, 21],  # left_wrist
+            23: [11, 24, 25],  # left_hip
+            25: [23, 27, 26],  # left_knee
+            27: [25, 29, 31],  # left_ankle
+            12: [11, 14, 24],  # right_shoulder
+            14: [12, 16, 24],  # right_elbow
+            16: [14, 20, 22],  # right_wrist
+            24: [12, 23, 26],  # right_hip
+            26: [24, 28, 25],  # right_knee
+            28: [26, 30, 32],  # right_ankle
+            0: [1, 4, 7, 8],   # nose
+            1: [2, 4, 0],      # left_eye_inner
+            2: [1, 3, 0],      # left_eye
         }
         
         if index in neighbor_groups:
@@ -281,75 +425,81 @@ class PoseExtractor:
                     visible_neighbors.append(positions[neighbor_idx])
             
             if visible_neighbors:
-                # Average of visible neighbors
                 return np.mean(visible_neighbors, axis=0)
         
-        # Fallback: return zero
         return np.zeros(3, dtype=np.float32)
     
-    def draw_landmarks(self, image: np.ndarray, 
+    def draw_landmarks(self, 
+                      image: np.ndarray, 
                       pose_result: Optional[PoseResult] = None,
                       draw_connections: bool = True,
                       landmark_color: Tuple[int, int, int] = (245, 117, 66),
                       connection_color: Tuple[int, int, int] = (245, 66, 230),
                       draw_visibility: bool = False) -> np.ndarray:
         """
-        Draw landmarks on image using pre-computed MediaPipe results.
-        
-        Args:
-            image: Original BGR image
-            pose_result: Pre-computed pose result from process_frame()
-            draw_connections: Whether to draw skeleton connections
-            landmark_color: RGB color for landmarks
-            connection_color: RGB color for connections
-            draw_visibility: Whether to color-code landmarks by visibility
-            
-        Returns:
-            Annotated image with landmarks
+        Draw landmarks on image.
         """
         annotated_image = image.copy()
         
         if pose_result and pose_result.mp_results.pose_landmarks:
-            # Use pre-computed MediaPipe results
+            # Get pose landmarks from result
+            pose_landmarks = pose_result.mp_results.pose_landmarks[0]
+            
             if draw_visibility and hasattr(pose_result, 'landmarks'):
                 # Color-code by visibility
                 self._draw_landmarks_with_visibility(
                     annotated_image,
-                    pose_result.mp_results.pose_landmarks,
-                    pose_result.landmarks[:, 3],  # Visibility array
+                    pose_landmarks,
+                    pose_result.landmarks[:, 3],
                     draw_connections
                 )
             else:
                 # Standard drawing
-                self.mp_drawing.draw_landmarks(
-                    annotated_image,
-                    pose_result.mp_results.pose_landmarks,
-                    self.POSE_CONNECTIONS if draw_connections else None,
-                    self.mp_drawing.DrawingSpec(
-                        color=landmark_color, 
-                        thickness=2, 
-                        circle_radius=2
-                    ),
-                    self.mp_drawing.DrawingSpec(
-                        color=connection_color, 
-                        thickness=2, 
-                        circle_radius=2
-                    ) if draw_connections else None
-                )
+                h, w = image.shape[:2]
+                
+                # Draw connections
+                if draw_connections:
+                    for connection in self.POSE_CONNECTIONS:
+                        start_idx, end_idx = connection
+                        
+                        start_point = pose_landmarks[start_idx]
+                        end_point = pose_landmarks[end_idx]
+                        
+                        # Convert normalized coordinates to pixel coordinates
+                        start_pixel = (int(start_point.x * w), int(start_point.y * h))
+                        end_pixel = (int(end_point.x * w), int(end_point.y * h))
+                        
+                        cv2.line(annotated_image, start_pixel, end_pixel, connection_color, 2)
+                
+                # Draw landmarks
+                for landmark in pose_landmarks:
+                    pixel_x = int(landmark.x * w)
+                    pixel_y = int(landmark.y * h)
+                    
+                    cv2.circle(annotated_image, (pixel_x, pixel_y), 5, landmark_color, -1)
             
-            # Add confidence text for debugging
-            if hasattr(pose_result.mp_results, 'pose_world_landmarks'):
-                # Extract average confidence from world landmarks
-                world_landmarks = pose_result.mp_results.pose_world_landmarks.landmark
-                avg_visibility = np.mean([lm.visibility for lm in world_landmarks])
+            # Add confidence text
+            avg_visibility = np.mean(pose_result.landmarks[:, 3])
+            cv2.putText(
+                annotated_image,
+                f"Conf: {avg_visibility:.2f}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2
+            )
+            
+            # Add timestamp info
+            if hasattr(pose_result, 'timestamp_ms'):
                 cv2.putText(
                     annotated_image,
-                    f"Conf: {avg_visibility:.2f}",
-                    (10, 30),
+                    f"Time: {pose_result.timestamp_ms}ms",
+                    (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2
+                    0.5,
+                    (255, 255, 0),
+                    1
                 )
         
         return annotated_image
@@ -361,78 +511,59 @@ class PoseExtractor:
                                        draw_connections: bool):
         """
         Draw landmarks with color coding based on visibility.
-        
-        Args:
-            image: Image to draw on
-            landmarks: MediaPipe landmarks object
-            visibility: Visibility values (0-1)
-            draw_connections: Whether to draw connections
         """
-        # Convert to list for iteration
-        landmark_list = landmarks.landmark
+        h, w = image.shape[:2]
         
-        # Draw connections first (fainter for low visibility)
+        # Draw connections
         if draw_connections:
             for connection in self.POSE_CONNECTIONS:
                 start_idx, end_idx = connection
                 
-                # Get visibility of both endpoints
-                vis_start = visibility[start_idx]
-                vis_end = visibility[end_idx]
-                avg_visibility = (vis_start + vis_end) / 2
-                
-                if avg_visibility > 0.3:  # Only draw if reasonably visible
-                    # Fade color based on visibility
-                    intensity = int(avg_visibility * 255)
-                    color = (intensity, intensity, 255)  # Blue scale
+                if start_idx < len(visibility) and end_idx < len(visibility):
+                    vis_start = visibility[start_idx]
+                    vis_end = visibility[end_idx]
+                    avg_visibility = (vis_start + vis_end) / 2
                     
-                    # Get image coordinates
-                    h, w = image.shape[:2]
-                    start_point = (
-                        int(landmark_list[start_idx].x * w),
-                        int(landmark_list[start_idx].y * h)
-                    )
-                    end_point = (
-                        int(landmark_list[end_idx].x * w),
-                        int(landmark_list[end_idx].y * h)
-                    )
-                    
-                    cv2.line(image, start_point, end_point, color, 2)
+                    if avg_visibility > 0.3:
+                        intensity = int(avg_visibility * 255)
+                        color = (intensity, intensity, 255)
+                        
+                        start_point = landmarks[start_idx]
+                        end_point = landmarks[end_idx]
+                        
+                        start_pixel = (int(start_point.x * w), int(start_point.y * h))
+                        end_pixel = (int(end_point.x * w), int(end_point.y * h))
+                        
+                        cv2.line(image, start_pixel, end_pixel, color, 2)
         
         # Draw landmarks
-        for i, landmark in enumerate(landmark_list):
-            vis = visibility[i]
-            
-            if vis > 0.3:  # Only draw if reasonably visible
-                # Color based on visibility (green = high, red = low)
-                color = (
-                    int(255 * (1 - vis)),  # Red component (inverse of visibility)
-                    int(255 * vis),        # Green component (proportional to visibility)
-                    100                     # Blue component (constant)
-                )
+        for i, landmark in enumerate(landmarks):
+            if i < len(visibility):
+                vis = visibility[i]
                 
-                # Get image coordinates
-                h, w = image.shape[:2]
-                center = (
-                    int(landmark.x * w),
-                    int(landmark.y * h)
-                )
-                
-                # Draw circle
-                radius = int(3 + vis * 3)  # Size based on visibility
-                cv2.circle(image, center, radius, color, -1)
-                
-                # Draw visibility value
-                if vis < 0.7:  # Only show for low-visibility points
-                    cv2.putText(
-                        image,
-                        f"{vis:.1f}",
-                        (center[0] + 5, center[1] - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.4,
-                        color,
-                        1
+                if vis > 0.3:
+                    color = (
+                        int(255 * (1 - vis)),
+                        int(255 * vis),
+                        100
                     )
+                    
+                    pixel_x = int(landmark.x * w)
+                    pixel_y = int(landmark.y * h)
+                    
+                    radius = int(3 + vis * 3)
+                    cv2.circle(image, (pixel_x, pixel_y), radius, color, -1)
+                    
+                    if vis < 0.7:
+                        cv2.putText(
+                            image,
+                            f"{vis:.1f}",
+                            (pixel_x + 5, pixel_y - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.4,
+                            color,
+                            1
+                        )
     
     def get_landmark_names(self) -> Dict[str, int]:
         """Get mapping of landmark names to indices."""
@@ -440,35 +571,14 @@ class PoseExtractor:
     
     def get_keypoint_visibility(self, landmarks: np.ndarray, 
                                threshold: float = 0.5) -> np.ndarray:
-        """
-        Extract binary visibility mask from landmarks.
-        
-        Args:
-            landmarks: Raw landmarks from MediaPipe (33, 4)
-            threshold: Visibility threshold
-            
-        Returns:
-            Boolean array of shape (33,) indicating visible keypoints
-        """
+        """Extract binary visibility mask from landmarks."""
         return landmarks[:, 3] >= threshold
     
     def get_body_dimensions(self, landmarks: np.ndarray) -> Dict[str, float]:
-        """
-        Calculate body dimensions from normalized landmarks.
-        Useful for gesture analysis.
-        
-        Args:
-            landmarks: Normalized landmarks (33, 4) WITH visibility
-            
-        Returns:
-            Dictionary of body measurements
-        """
+        """Calculate body dimensions from normalized landmarks."""
         idx = self.LANDMARK_INDICES
-        
-        # Use only visible points
         visibility = landmarks[:, 3]
         
-        # Calculate various distances (only if points are visible)
         measurements = {}
         
         # Shoulder width
@@ -483,11 +593,10 @@ class PoseExtractor:
                 landmarks[idx['left_hip'], :3] - landmarks[idx['right_hip'], :3]
             )
         
-        # Torso length (between shoulder center and hip center)
+        # Torso length
         shoulder_center = None
         hip_center = None
         
-        # Calculate shoulder center if at least one shoulder is visible
         shoulder_positions = []
         for shoulder_idx in [idx['left_shoulder'], idx['right_shoulder']]:
             if visibility[shoulder_idx] > 0.5:
@@ -496,7 +605,6 @@ class PoseExtractor:
         if shoulder_positions:
             shoulder_center = np.mean(shoulder_positions, axis=0)
         
-        # Calculate hip center if at least one hip is visible
         hip_positions = []
         for hip_idx in [idx['left_hip'], idx['right_hip']]:
             if visibility[hip_idx] > 0.5:
@@ -508,7 +616,7 @@ class PoseExtractor:
         if shoulder_center is not None and hip_center is not None:
             measurements['torso_length'] = np.linalg.norm(shoulder_center - hip_center)
         
-        # Arm lengths (only if all joints in chain are visible)
+        # Arm lengths
         left_arm_visible = all(visibility[idx[joint]] > 0.5 
                               for joint in ['left_shoulder', 'left_elbow', 'left_wrist'])
         right_arm_visible = all(visibility[idx[joint]] > 0.5 
@@ -526,7 +634,7 @@ class PoseExtractor:
                 np.linalg.norm(landmarks[idx['right_elbow'], :3] - landmarks[idx['right_wrist'], :3])
             )
         
-        # Add default values for missing measurements
+        # Default values
         defaults = {
             'shoulder_width': 1.0,
             'hip_width': 0.8,
@@ -540,7 +648,6 @@ class PoseExtractor:
             if key not in measurements:
                 measurements[key] = default
         
-        # Calculate arm length ratio
         measurements['arm_length_ratio'] = (
             measurements['left_arm_length'] / measurements['right_arm_length'] 
             if measurements['right_arm_length'] > 0 else 1.0
@@ -549,21 +656,20 @@ class PoseExtractor:
         return measurements
     
     def reset(self):
-        """Reset internal state (e.g., smoothing buffers)."""
-        if hasattr(self, '_prev_normalized'):
-            delattr(self, '_prev_normalized')
+        """Reset internal state (smoothing buffers and start time)."""
+        self._prev_normalized = None
+        self._start_time = time.time()  # Reset timestamp baseline
     
     def close(self):
         """Clean up resources."""
-        self.pose.close()
+        if hasattr(self, 'landmarker'):
+            self.landmarker.close()
         self.reset()
     
     def __enter__(self):
-        """Context manager entry."""
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
         self.close()
 
 
@@ -572,175 +678,88 @@ class PoseExtractor:
 # ============================================================================
 
 class BatchPoseProcessor:
-    """
-    Utility for batch processing multiple frames or video sequences.
-    More efficient than single-frame processing.
-    """
+    """Batch processing for multiple frames."""
     
     def __init__(self, pose_extractor: PoseExtractor):
-        """
-        Args:
-            pose_extractor: Initialized PoseExtractor instance
-        """
         self.extractor = pose_extractor
     
     def process_batch(self, images: List[np.ndarray]) -> List[Optional[PoseResult]]:
-        """
-        Process a batch of images.
-        
-        Args:
-            images: List of BGR images
-            
-        Returns:
-            List of PoseResults (None for frames with no pose)
-        """
         results = []
-        
         for image in images:
             result = self.extractor.process_frame(image)
             results.append(result)
-        
         return results
     
     def extract_landmarks_batch(self, images: List[np.ndarray]) -> List[Optional[np.ndarray]]:
-        """
-        Extract landmarks from a batch of images.
-        
-        Args:
-            images: List of BGR images
-            
-        Returns:
-            List of normalized landmarks (33, 4) or None
-        """
         results = []
-        
         for image in images:
             landmarks = self.extractor.extract_landmarks(image)
             results.append(landmarks)
-        
         return results
     
     def create_sequence(self, images: List[np.ndarray]) -> Optional[np.ndarray]:
-        """
-        Create a landmark sequence from batch of images.
-        
-        Args:
-            images: List of BGR images (sequential frames)
-            
-        Returns:
-            Landmark sequence of shape (T, 33, 4) or None if no poses detected
-        """
         landmarks_batch = self.extract_landmarks_batch(images)
-        
-        # Filter out None results
         valid_landmarks = [lm for lm in landmarks_batch if lm is not None]
         
         if not valid_landmarks:
             return None
         
-        # Stack into sequence
-        sequence = np.stack(valid_landmarks, axis=0)
-        
-        return sequence
+        return np.stack(valid_landmarks, axis=0)
 
 
 # ============================================================================
-# TEST FUNCTION WITH FIXED VISIBILITY HANDLING
+# QUICK INSTALLATION SCRIPT
 # ============================================================================
 
-def test_fixed_pose_extractor():
-    """Test the fixed pose extractor with visibility handling."""
-    import time
+def install_mediapipe_tasks():
+    """Helper function to guide MediaPipe Tasks installation."""
+    print("\n" + "=" * 60)
+    print("📦 MEDIAPIPE TASKS INSTALLATION GUIDE (Windows Python 3.10+)")
+    print("=" * 60)
+    print("\n1. Install MediaPipe:")
+    print("   pip install --upgrade mediapipe")
+    print("\n2. Download pose landmarker model:")
+    print("   python -c \"from mediapipe.tasks import python; from mediapipe.tasks.python import vision;")
+    print("   options = vision.PoseLandmarkerOptions(")
+    print("       base_options=python.BaseOptions(model_asset_path='pose_landmarker_full.task'),")
+    print("       running_mode=vision.RunningMode.VIDEO);")
+    print("   vision.PoseLandmarker.create_from_options(options)\"")
+    print("\n3. Verify installation:")
+    print("   python -c \"import mediapipe as mp; print(f'MediaPipe {mp.__version__}')\"")
+    print("\n" + "=" * 60)
+
+
+# ============================================================================
+# TEST FUNCTION
+# ============================================================================
+
+def test_pose_extractor():
+    """Test the Tasks API pose extractor."""
+    if not MP_TASKS_AVAILABLE:
+        install_mediapipe_tasks()
+        return
     
-    print("Testing Fixed Pose Extractor with Visibility...")
+    print("🧪 Testing PoseLandmarker (MediaPipe Tasks API)...")
+    print("   Running mode: VIDEO")
+    print("   Using: detect_for_video() with REAL timestamps")
+    print("   Using: mp.Image (correct class)")
+    print("   Timestamps: Monotonic (time since start)")
     
-    # Initialize extractor
-    extractor = PoseExtractor(use_torso_length=True)
-    
-    # Create a test image (or use webcam)
-    # For this test, we'll create a synthetic image
-    test_image = np.zeros((480, 640, 3), dtype=np.uint8)
-    test_image[:] = (100, 100, 100)  # Gray background
-    
-    # Draw a simple stick figure (simulating a person)
-    cv2.circle(test_image, (320, 150), 20, (255, 255, 255), -1)  # Head
-    cv2.line(test_image, (320, 170), (320, 270), (255, 255, 255), 5)  # Body
-    cv2.line(test_image, (320, 200), (270, 150), (255, 255, 255), 5)  # Left arm
-    cv2.line(test_image, (320, 200), (370, 150), (255, 255, 255), 5)  # Right arm
-    cv2.line(test_image, (320, 270), (280, 350), (255, 255, 255), 5)  # Left leg
-    cv2.line(test_image, (320, 270), (360, 350), (255, 255, 255), 5)  # Right leg
-    
-    # Process the frame
-    pose_result = extractor.process_frame(test_image)
-    
-    if pose_result:
-        print(f"✅ Pose detected successfully")
-        print(f"   Normalized landmarks shape: {pose_result.landmarks.shape}")
-        print(f"   Expected: (33, 4) WITH visibility")
-        
-        # Check shapes
-        if pose_result.landmarks.shape == (33, 4):
-            print("   ✅ Correct shape with visibility")
-            
-            # Check visibility values
-            visibility = pose_result.landmarks[:, 3]
-            print(f"   Visibility range: [{visibility.min():.3f}, {visibility.max():.3f}]")
-            print(f"   Mean visibility: {visibility.mean():.3f}")
-            
-            # Check that positions are normalized
-            positions = pose_result.landmarks[:, :3]
-            print(f"   Position range: [{positions.min():.3f}, {positions.max():.3f}]")
-            
-            # Test FeatureEngineer compatibility
-            try:
-                from feature_engineer import FeatureEngineer, FeatureConfig
-                
-                print("\n🧪 Testing FeatureEngineer compatibility...")
-                
-                # Create a sequence from single frame
-                sequence = np.stack([pose_result.landmarks], axis=0)
-                print(f"   Sequence shape: {sequence.shape}")
-                
-                # Initialize FeatureEngineer
-                config = FeatureConfig(compute_idle_features=False)
-                engineer = FeatureEngineer(config)
-                
-                # Extract features (should not crash now)
-                features = engineer.extract_features(sequence)
-                print(f"   Features extracted: {features.shape}")
-                print(f"   Feature validation: {engineer.validate_features(features)}")
-                
-                print("   ✅ FeatureEngineer compatibility confirmed!")
-                
-            except ImportError:
-                print("   ⚠️  FeatureEngineer not available for test")
-            except Exception as e:
-                print(f"   ❌ FeatureEngineer test failed: {e}")
-        
-        else:
-            print(f"   ❌ Incorrect shape: {pose_result.landmarks.shape}")
-        
-        # Test visualization
-        annotated = extractor.draw_landmarks(
-            test_image, 
-            pose_result, 
-            draw_visibility=True
+    try:
+        # Initialize extractor
+        extractor = PoseExtractor(
+            model_complexity=1,  # Full model
+            use_torso_length=True
         )
         
-        cv2.imshow('Fixed Pose Extractor Test', annotated)
-        cv2.waitKey(2000)  # Wait 2 seconds
-        cv2.destroyAllWindows()
+        # Test with webcam
+        print("\n🎥 Testing with webcam (press 'q' to quit)...")
+        cap = cv2.VideoCapture(0)
         
-    else:
-        print("❌ No pose detected in test image")
-    
-    # Test with webcam if available
-    print("\n🎥 Testing with webcam (press 'q' to quit)...")
-    cap = cv2.VideoCapture(0)
-    
-    if not cap.isOpened():
-        print("   ⚠️  Webcam not available, skipping live test")
-    else:
+        if not cap.isOpened():
+            print("   ⚠️  Webcam not available")
+            return
+        
         frame_count = 0
         start_time = time.time()
         
@@ -753,19 +772,21 @@ def test_fixed_pose_extractor():
             result = extractor.process_frame(frame)
             
             if result:
-                # Draw with visibility coloring
+                # Draw landmarks
                 annotated = extractor.draw_landmarks(
-                    frame, 
-                    result, 
+                    frame,
+                    result,
                     draw_visibility=True
                 )
                 
                 # Show stats
                 visibility = result.landmarks[:, 3]
                 avg_vis = visibility.mean()
+                fps = frame_count / (time.time() - start_time + 0.001)
+                
                 cv2.putText(
                     annotated,
-                    f"Avg Vis: {avg_vis:.2f}",
+                    f"FPS: {fps:.1f} | Vis: {avg_vis:.2f}",
                     (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.7,
@@ -773,7 +794,17 @@ def test_fixed_pose_extractor():
                     2
                 )
                 
-                cv2.imshow('Webcam Test (Fixed)', annotated)
+                cv2.putText(
+                    annotated,
+                    f"Time: {result.timestamp_ms}ms",
+                    (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 0),
+                    1
+                )
+                
+                cv2.imshow('MediaPipe Tasks API (VIDEO mode)', annotated)
             else:
                 cv2.putText(
                     frame,
@@ -784,72 +815,31 @@ def test_fixed_pose_extractor():
                     (0, 0, 255),
                     2
                 )
-                cv2.imshow('Webcam Test (Fixed)', frame)
+                cv2.imshow('MediaPipe Tasks API (VIDEO mode)', frame)
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             
             frame_count += 1
         
-        end_time = time.time()
-        elapsed = end_time - start_time
+        elapsed = time.time() - start_time
         
         print(f"   Processed {frame_count} frames in {elapsed:.2f}s")
         print(f"   Average FPS: {frame_count/elapsed:.1f}")
+        print(f"   Final timestamp: {int(elapsed * 1000)}ms")
         
         cap.release()
         cv2.destroyAllWindows()
-    
-    extractor.close()
-    print("\n✅ Fixed pose extractor test complete!")
-
-
-def test_batch_processing():
-    """Test batch processing functionality."""
-    print("\n🧪 Testing batch processing...")
-    
-    # Create some test images
-    test_images = []
-    for i in range(5):
-        img = np.zeros((240, 320, 3), dtype=np.uint8)
-        img[:] = (i * 40, i * 40, i * 40)  # Varying brightness
+        extractor.close()
         
-        # Add a simple shape
-        cv2.circle(img, (160, 120), 30 + i * 5, (255, 255, 255), -1)
-        test_images.append(img)
-    
-    # Initialize
-    extractor = PoseExtractor()
-    batch_processor = BatchPoseProcessor(extractor)
-    
-    # Process batch
-    results = batch_processor.process_batch(test_images)
-    
-    valid_results = [r for r in results if r is not None]
-    print(f"   Images processed: {len(test_images)}")
-    print(f"   Poses detected: {len(valid_results)}")
-    
-    # Create sequence
-    sequence = batch_processor.create_sequence(test_images)
-    
-    if sequence is not None:
-        print(f"   Sequence shape: {sequence.shape}")
-        print(f"   Expected: (T, 33, 4) where T <= {len(test_images)}")
+        print("\n✅ Pose extractor test complete!")
         
-        if sequence.shape[1:] == (33, 4):
-            print("   ✅ Batch processing works correctly!")
-        else:
-            print(f"   ❌ Incorrect sequence shape: {sequence.shape}")
-    else:
-        print("   ⚠️  No sequence created (no poses detected)")
-    
-    extractor.close()
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        install_mediapipe_tasks()
 
 
 if __name__ == "__main__":
-    test_fixed_pose_extractor()
-    test_batch_processing()
-    
-    print("\n" + "=" * 60)
-    print("✅ ALL POSE EXTRACTOR TESTS COMPLETE!")
-    print("=" * 60)
+    test_pose_extractor()

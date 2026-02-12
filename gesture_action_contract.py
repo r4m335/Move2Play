@@ -41,7 +41,7 @@ GESTURE_ACTION_MAPPING = {
 # ============================================================================
 
 # All gesture classes in alphabetical order (idle will be first alphabetically)
-GESTURE_CLASSES = sorted(list(GESTURE_ACTION_MAPPING.keys()))
+GESTURE_CLASSES = list(GESTURE_ACTION_MAPPING.keys())
 NUM_GESTURES = len(GESTURE_CLASSES)
 
 # Action types for reference
