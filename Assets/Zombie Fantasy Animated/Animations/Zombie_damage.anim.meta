@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 9746340f8d219b0428ef30c20d816428
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 7400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 246574
+  packageName: Zombie Fantasy Animated
+  packageVersion: 1.0.0
+  assetPath: Assets/Zombie Fantasy Animated/Animations/Zombie_damage.anim
+  uploadId: 561820

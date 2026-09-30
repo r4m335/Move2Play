@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 7f3991ccec1c77447bebba5876b933f1
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 7400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 246574
+  packageName: Zombie Fantasy Animated
+  packageVersion: 1.0.0
+  assetPath: Assets/Zombie Fantasy Animated/Animations/Zombie_chasingWalk.anim
+  uploadId: 561820

@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 5f692961e8c8a8042b78d37f80975d5b
+timeCreated: 1529500603
+licenseType: Store
+NativeFormatImporter:
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 115067
+  packageName: Everyday Motion Pack Free
+  packageVersion: 1.0
+  assetPath: Assets/EverydayMotionPackFree/Model/Materials/texture_female.mat
+  uploadId: 252845

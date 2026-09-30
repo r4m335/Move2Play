@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 181f200c53a84ed4cb5c954b51bc5315
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 7400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 246574
+  packageName: Zombie Fantasy Animated
+  packageVersion: 1.0.0
+  assetPath: Assets/Zombie Fantasy Animated/Animations/Zombie_running.anim
+  uploadId: 561820

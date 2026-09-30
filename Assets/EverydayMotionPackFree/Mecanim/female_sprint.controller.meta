@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: da646b2a3a6cab74e9d7eae16c7e790e
+timeCreated: 1525060383
+licenseType: Store
+NativeFormatImporter:
+  mainObjectFileID: 9100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 115067
+  packageName: Everyday Motion Pack Free
+  packageVersion: 1.0
+  assetPath: Assets/EverydayMotionPackFree/Mecanim/female_sprint.controller
+  uploadId: 252845

@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 313cb394548d1344982ac7c43688fc2a
+timeCreated: 1525922955
+licenseType: Store
+NativeFormatImporter:
+  mainObjectFileID: 9100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 115067
+  packageName: Everyday Motion Pack Free
+  packageVersion: 1.0
+  assetPath: Assets/EverydayMotionPackFree/Mecanim/male_pant.controller
+  uploadId: 252845

@@ -1,0 +1,17 @@
+fileFormatVersion: 2
+guid: 700db51e210cf0d4da11a87f393dda00
+timeCreated: 1522121009
+licenseType: Store
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 9100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 115067
+  packageName: Everyday Motion Pack Free
+  packageVersion: 1.0
+  assetPath: Assets/EverydayMotionPackFree/Mecanim/male_chair.controller
+  uploadId: 252845

@@ -1,0 +1,17 @@
+fileFormatVersion: 2
+guid: 788cb3511bd62ed48a55f33629732b29
+timeCreated: 1521987710
+licenseType: Store
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 100100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 115067
+  packageName: Everyday Motion Pack Free
+  packageVersion: 1.0
+  assetPath: Assets/EverydayMotionPackFree/Model/Prop/chair.prefab
+  uploadId: 252845

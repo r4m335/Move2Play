@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 3ff39fa733fffdc43b93e316d9feb936
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 9100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 246574
+  packageName: Zombie Fantasy Animated
+  packageVersion: 1.0.0
+  assetPath: Assets/Zombie Fantasy Animated/Animations/Zombie Animator Controller.controller
+  uploadId: 561820
