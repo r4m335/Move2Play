@@ -1,136 +1,105 @@
-# Gesture-Based Zombie Runner Game
+# Move2Play 🏃‍♂️🎮
 
-A complete implementation of a gesture-controlled mobile game using pose estimation and CNN classification.
+**Move2Play** is an interactive, markerless motion-controlled exergaming survival action game built in **Unity (URP)** and powered by real-time computer vision using **Google MediaPipe**. 
 
-## Architecture Overview
+Players control their character inside an open 3D environment by performing real-world physical gestures—such as running in place, turning, jumping, punching, kicking, dodging, and blocking—captured through a standard RGB webcam with zero extra hardware requirements.
 
-```
-[Camera Input] → [MediaPipe Pose] → [Feature Engineering] → [CNN Classifier] → [Action Mapping] → [Unity Game]
-```
+---
 
-## Quick Start
+## 🌟 Key Features
 
-### 1. Installation
+- **Markerless Full-Body Motion Tracking**: Real-time 33-point 3D pose landmark detection powered by Google MediaPipe. No wearable sensors, specialized controllers, or depth cameras required.
+- **Biomechanical Kinematic Engine**: Rule-based gesture recognition pipeline analyzing joint angles, arm abduction, hip displacement impulse, and limb elevation with time-weighted prediction smoothing.
+- **Interactive Calibration System**: Guided tutorial ensuring player body proportions, camera distance, and lighting conditions are verified before entering the game.
+- **Ergonomic Run-Lock UX**: Automatically engages after 5 seconds of sustained running to reduce arm and shoulder fatigue.
+- **Immersive Combat & Survival Loop**:
+  - Punch, kick, block (50% damage reduction), and dodge attacks from procedural zombie waves.
+  - Multi-tiered spatial awareness: 360° off-screen compass radar and distance-scaled heartbeat audio.
+  - Dynamic MedKit navigation arrow that activates under low health conditions ($\le 30\%$).
+- **Atmospheric 3D World**: Universal Render Pipeline (URP) environment featuring procedural terrain spawning, water hazards, ambient wildlife, and a cinematic dragon patrol AI.
 
-```bash
-# Clone the repository
-git clone <repository-url>
-cd gesture-zombie-runner
+---
 
-# Run setup script
-python setup.py
-```
+## 🕹️ Motion Controls
 
-### 2. Collect Gesture Data
+| Action | Physical Gesture |
+| :--- | :--- |
+| **Run** | Raise both arms wide (T-Pose) or sprint in place |
+| **Turn Left** | Raise only your left arm sideways |
+| **Turn Right** | Raise only your right arm sideways |
+| **Jump** | Jump vertically in place |
+| **Punch** | Extend wrist forward |
+| **Kick** | Raise knee or perform forward kick |
+| **Block / Guard** | Bring both hands close to face/head |
+| **Dodge / Squat** | Squat down (bend knees $< 145^\circ$) |
 
-```bash
-# Collect gesture samples
-python main.py collect
-```
+*Note: Full keyboard fallbacks (WASD / Arrows, Space, Shift, Mouse Click, G) are also supported.*
 
-Follow on-screen instructions to record each gesture:
-- Run
-- Punch (left/right)
-- Kick
-- Lean left/right
-- Squat
-- Block
+---
 
-### 3. Train the Model
+## 🛠️ Technology Stack
 
-```bash
-# Train the CNN model
-python main.py train
+- **Game Engine**: Unity 2022.3 LTS (Universal Render Pipeline - URP)
+- **Computer Vision**: Google MediaPipe Pose via [MediaPipeUnityPlugin](https://github.com/homuler/MediaPipeUnityPlugin)
+- **Programming Language**: C# (.NET / Mono)
+- **Audio Engine**: Custom multi-channel Audio Manager (SFX, Ambient, Music)
+- **Physics & AI**: Unity NavMesh Agent, Physics OverlapSphere, Terrain Raycasting
 
-# Optional: Monitor training with TensorBoard
-tensorboard --logdir=logs
-```
+---
 
-### 4. Test the System
-
-```bash
-# Test with webcam
-python main.py demo
-```
-
-## Project Structure
+## 📁 Repository Structure
 
 ```
-gesture-zombie-runner/
-├── gesture_dataset/          # Collected gesture sequences
-├── models/                   # Trained models
-├── exports/                  # Exported TFLite models
-├── unity_integration/        # Unity C# scripts
-├── pose_extractor.py         # MediaPipe pose extraction
-├── feature_engineer.py       # Feature engineering
-├── gesture_model.py          # CNN model architecture
-├── real_time_inference.py    # Real-time recognition
-├── unity_integration.py      # Unity bridge
-└── main.py                   # Main entry point
+├── Assets/
+│   ├── scripts/
+│   │   ├── CV/                          # Computer vision, MediaPipe bridge & recognizer
+│   │   │   ├── MediaPipeBridge.cs
+│   │   │   ├── MediaPipePoseManager.cs
+│   │   │   ├── RuleBasedGestureRecognizer.cs
+│   │   │   ├── PoseVisualizer.cs
+│   │   │   └── GestureDebugUI.cs
+│   │   ├── CalibrationManager.cs        # Pre-game calibration & pose verification
+│   │   ├── PlayerController.cs          # Main movement, gesture dispatcher & Run-Lock
+│   │   ├── CombatController.cs          # Punch/kick detection, damage radius & block
+│   │   ├── PlayerStats.cs               # Health, drowning, damage flash
+│   │   ├── EnemyAI.cs                   # 4-state zombie FSM (Idle, Wander, Chase, Attack)
+│   │   ├── EnemySpawner.cs              # Terrain-aware procedural wave spawner
+│   │   ├── DragonAI.cs                  # Cinematic flying dragon waypoint AI
+│   │   ├── EnemyTrackerUI.cs            # Directional radar arrow & heartbeat audio
+│   │   ├── MedKitTracker.cs             # Compass to nearest health pickup
+│   │   ├── AudioManager.cs              # Centralized audio channel manager
+│   │   └── UIController.cs              # Game loop, survival timer, victory/game over
+│   └── Scenes/
+│       ├── MainMenu.unity
+│       ├── Calibration.unity
+│       ├── Guide.unity
+│       └── Forest.unity
+├── Packages/                            # Package manifests and MediaPipe package
+├── ProjectSettings/                     # Unity project settings and input configurations
+└── .gitignore                           # Excludes Library, Temp, and build artifacts
 ```
 
-## Gesture-Action Mapping
+---
 
-| Gesture | Game Action | Parameters |
-|---------|-------------|------------|
-| Run | Forward Movement | speed=1.0 |
-| Punch Left | Attack | side=left, damage=25 |
-| Punch Right | Attack | side=right, damage=25 |
-| Kick | Attack | type=kick, damage=35 |
-| Lean Left | Dodge | direction=left, distance=2.0 |
-| Lean Right | Dodge | direction=right, distance=2.0 |
-| Squat | Slide | duration=1.5, height=0.5 |
-| Block | Defense | reduction=0.7, duration=2.0 |
+## 🚀 Getting Started
 
-## Performance Targets
+### Prerequisites
+- **Unity Editor**: `2022.3.62f1` (or compatible 2022.3 LTS release)
+- **Webcam**: Standard USB or integrated laptop webcam (720p @ 30 FPS recommended)
+- **Hardware**: Windows 10/11 x64
 
-- **Inference latency:** < 30ms on mobile
-- **Classification accuracy:** > 90%
-- **End-to-end latency:** < 150ms
-- **Frame rate:** 15-20 FPS (pose + inference)
+### Setup Instructions
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/r4m335/Move2Play.git
+   ```
+2. Open **Unity Hub** and click **Add** $\to$ **Add project from disk**.
+3. Select the cloned `Move2Play` directory.
+4. Allow Unity to resolve packages and generate the local `Library` cache.
+5. In the Unity Project window, open `Assets/Scenes/MainMenu.unity`.
+6. Press **Play** in the Unity Editor or build an executable via **File > Build Settings**.
 
-## Mobile Optimization
+---
 
-- **Model Quantization:** FP16/INT8 quantization for TFLite
-- **Resolution:** 480p camera input
-- **Batch Processing:** Process every 2-3 frames
-- **NNAPI:** Use hardware acceleration when available
-
-## Testing Protocol
-
-Run the complete test suite:
-
-```bash
-python test_suite.py --all
-```
-
-Tests include:
-- Gesture accuracy (offline)
-- Latency measurements
-- False positive rate during movement
-- Long-session stability
-- Cross-user generalization
-
-## License
-
-MIT License - See LICENSE file for details.
-
-## Citation
-
-If you use this in research, please cite:
-
-```text
-@software{gesture_zombie_runner_2023,
-  title = {Gesture-Based Zombie Runner: Pose Estimation Game System},
-  author = {Your Name},
-  year = {2023},
-  url = {https://github.com/yourusername/gesture-zombie-runner}
-}
-```
-
-## Support
-
-For issues and questions:
-- Check the troubleshooting guide in docs/
-- Open an issue on GitHub
-- Contact: your.email@example.com
+## 👥 Authors & Academic Credits
+Final Year Project (FYP) developed for Software Engineering.
