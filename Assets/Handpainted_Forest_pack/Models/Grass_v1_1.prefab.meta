@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 28f60661728ddb148a424ba31b70ccc4
+timeCreated: 1555821274
+licenseType: Store
+NativeFormatImporter:
+  mainObjectFileID: 100100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 144637
+  packageName: Handpainted Forest Pack v1.0
+  packageVersion: 1.0
+  assetPath: Assets/Handpainted_Forest_pack/Models/Grass_v1_1.prefab
+  uploadId: 306751
